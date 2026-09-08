@@ -123,6 +123,51 @@
     padding: 1px 5px; font-family: inherit; font-size: 10.5px;
   }
 
+  /* ── 입구 안내 말풍선 ── */
+  #bubbles { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
+  .bubble {
+    position: absolute;
+    transform: translate(-50%, -100%);
+    background: rgba(16, 19, 24, 0.94);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 12px;
+    padding: 11px 15px 12px;
+    min-width: 224px;
+    box-shadow: 0 14px 38px rgba(0, 0, 0, 0.6);
+    animation: pop 0.22s cubic-bezier(0.2, 1.3, 0.5, 1);
+  }
+  .bubble.leaving { animation: fade 0.35s forwards; }
+  @keyframes pop {
+    from { opacity: 0; transform: translate(-50%, -88%) scale(0.92); }
+    to   { opacity: 1; transform: translate(-50%, -100%) scale(1); }
+  }
+  @keyframes fade { to { opacity: 0; transform: translate(-50%, -112%); } }
+  .bubble::after {
+    content: ""; position: absolute; left: 50%; bottom: -7px;
+    width: 12px; height: 12px; margin-left: -6px;
+    background: rgba(16, 19, 24, 0.94);
+    border-right: 1px solid rgba(255, 255, 255, 0.14);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+    transform: rotate(45deg);
+  }
+  .bubble .tag {
+    font-size: 9.5px; letter-spacing: 1.2px; color: var(--muted);
+    text-transform: uppercase; margin-bottom: 5px;
+  }
+  .bubble .plate {
+    font-size: 16px; font-weight: 700; letter-spacing: 0.5px; margin-bottom: 7px;
+  }
+  .bubble .msg { font-size: 12.5px; line-height: 1.55; color: #cfd6df; }
+  .bubble .swatch {
+    display: inline-block; width: 26px; height: 10px; border-radius: 3px;
+    vertical-align: -1px; margin-right: 5px;
+  }
+  .bubble .dest {
+    margin-top: 8px; padding-top: 8px; font-size: 11.5px; color: var(--muted);
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+  }
+  .bubble .dest b { color: var(--text); font-weight: 600; }
+
   #loading {
     position: fixed; inset: 0; display: grid; place-items: center;
     background: var(--bg); font-size: 13px; color: var(--muted);
@@ -192,6 +237,8 @@
     <kbd>드래그</kbd> 회전 · <kbd>휠</kbd> 확대 · <kbd>우클릭 드래그</kbd> 이동<br />
     현재는 도면 미리보기입니다 — 차량과 유도선은 예시 데이터입니다
   </div>
+
+  <div id="bubbles"></div>
 
   <div id="loading">주차장을 짓는 중…</div>
   <pre id="err"></pre>

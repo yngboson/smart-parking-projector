@@ -16,6 +16,9 @@ import { buildDemoScenario } from "/js/demo.js";
 
 const $ = (id) => document.getElementById(id);
 
+/** 입구에서 안내를 받고 출발하기까지 정차하는 시간 (초). */
+const GATE_PAUSE = 3.4;
+
 export async function boot() {
   const lot = await fetch("/api/layout").then((r) => r.json());
 
@@ -66,7 +69,7 @@ class App {
     this.guided = [];
     this.glow = 1.0;
 
-    this.slotById = new Map(lot.slots.map((s) => [s.id, s]));
+    this.bubbles = new BubbleLayer(stage, lot);
     this.graphGroup = buildGraphOverlay(THREE, lot);
     this.graphGroup.visible = false;
     stage.scene.add(this.graphGroup);
@@ -88,23 +91,30 @@ class App {
       this.cars.push(car);
     }
 
-    // 유도선을 따라 이동 중인 차량들
+    // 유도선을 따라 이동 중인 차량들.
+    // 차선(lane)을 서로 다르게 배정해 같은 통로에서도 나란히 놓이게 한다.
     for (const g of scenario.guided) {
-      const color = this.palette.acquire(g.plate);
-      const line = new GuidanceLine(THREE, g.polyline, color);
-      const marker = new TargetMarker(THREE, g.slot, color);
+      const style = this.palette.acquire(g.plate);
+      const line = new GuidanceLine(THREE, g.polyline, style.color, {
+        laneOffset: Palette.laneOffset(style.lane),
+      });
+      const marker = new TargetMarker(THREE, g.slot, style.color);
       this.stage.scene.add(line.mesh, marker.mesh);
 
       const car = await this.models.create(pickModel(modelNames, g.colorSeed), {
         length: 4.7, width: 1.85, color: pickBodyColor(g.colorSeed),
       });
       car.add(buildContactShadow(THREE, 4.7, 1.85));
+      car.visible = false;
       this.stage.scene.add(car);
 
-      this.guided.push({ ...g, color, line, marker, car, travelled: 0, t: 0 });
+      this.guided.push({
+        ...g, style, line, marker, car,
+        travelled: 0, t: 0, phase: "waiting", bubble: null,
+      });
     }
 
-    renderLegend(this.guided, this.palette);
+    renderLegend(this.guided);
   }
 
   setGlow(g) {
@@ -118,17 +128,30 @@ class App {
       v.line.update(dt);
       v.marker.update(dt);
 
-      if (v.t < v.startDelay) {
+      if (v.phase === "waiting") {
         v.car.visible = false;
-        continue;
+        if (v.t >= v.startDelay) this.enterGate(v);
+        else continue;
       }
-      v.car.visible = true;
-      v.travelled += v.speed * dt;
 
-      // 끝까지 가면 처음으로 되감는다 (미리보기용 루프)
-      if (v.travelled > v.line.total) {
-        v.travelled = 0;
-        v.t = 0;
+      if (v.phase === "gate") {
+        // 입구에서 정차한 채 안내를 받는다
+        v.car.visible = true;
+        if (v.t >= v.startDelay + GATE_PAUSE) {
+          this.bubbles.remove(v);
+          v.phase = "driving";
+        }
+      } else if (v.phase === "driving") {
+        v.travelled += v.speed * dt;
+        if (v.travelled >= v.line.total) {
+          // 미리보기용 루프 — 실제 시뮬레이션에서는 여기서 주차가 끝난다
+          v.travelled = 0;
+          v.t = 0;
+          v.phase = "waiting";
+          v.line.setProgress(0);
+          v.car.visible = false;
+          continue;
+        }
       }
 
       const { position, heading } = v.line.sample(v.travelled);
@@ -137,19 +160,100 @@ class App {
       v.car.rotation.y = heading;
       v.line.setProgress(v.travelled / v.line.total);
     }
+
+    this.bubbles.update();
+  }
+
+  enterGate(v) {
+    v.phase = "gate";
+    v.travelled = 0;
+    v.line.setProgress(0);
+    this.bubbles.show(v);
+  }
+}
+
+/**
+ * 입구 안내 말풍선.
+ *
+ * 차단기가 번호판을 읽고 운전자에게 "당신 선은 이 색"이라고 알려주는 순간이다.
+ * 이 시스템의 사용자 경험 전체가 이 한 문장에 압축되어 있으므로 화면에 보여야 한다.
+ *
+ * 3D 스프라이트가 아니라 HTML 오버레이로 그린다. 한글이 또렷하게 나오고
+ * 카메라를 당겨도 글자가 깨지지 않는다.
+ */
+class BubbleLayer {
+  constructor(stage, lot) {
+    this.stage = stage;
+    this.root = $("bubbles");
+    this.active = [];
+    this.gate = lot.pedestrian_gates[0] ?? null;
+
+    const entry = lot.nodes.find((n) => n.id === lot.entry_nodes[0]);
+    this.anchor = entry
+      ? new THREE.Vector3(entry.pos[0], 5.6, -entry.pos[1])
+      : new THREE.Vector3(0, 5, 0);
+  }
+
+  show(v) {
+    const css = Palette.css(v.style.color);
+    const walk = this.gate
+      ? Math.round(Math.hypot(v.slot.center[0] - this.gate[0], v.slot.center[1] - this.gate[1]))
+      : 0;
+
+    const el = document.createElement("div");
+    el.className = "bubble";
+    el.innerHTML =
+      `<div class="tag">번호판 인식</div>` +
+      `<div class="plate">${v.plate}</div>` +
+      `<div class="msg">` +
+      `<span class="swatch" style="background:${css}"></span>` +
+      `<b style="color:${css}">${v.style.name}</b>색 선을 따라가 주시기 바랍니다` +
+      `</div>` +
+      `<div class="dest">배정 주차면 <b>${v.slot.id}</b> · 출입구까지 도보 <b>${walk}m</b></div>`;
+
+    this.root.appendChild(el);
+    v.bubble = el;
+    this.active.push(v);
+  }
+
+  remove(v) {
+    if (!v.bubble) return;
+    const el = v.bubble;
+    el.classList.add("leaving");
+    setTimeout(() => el.remove(), 360);
+    v.bubble = null;
+    this.active = this.active.filter((x) => x !== v);
+  }
+
+  /** 3D 앵커 위치를 화면 좌표로 투영해 말풍선을 붙인다. */
+  update() {
+    if (!this.active.length) return;
+
+    const p = this.anchor.clone().project(this.stage.camera);
+    const behind = p.z > 1;
+    const x = (p.x * 0.5 + 0.5) * innerWidth;
+    const y = (-p.y * 0.5 + 0.5) * innerHeight;
+
+    // 여러 대가 동시에 들어오면 위로 쌓는다
+    this.active.forEach((v, i) => {
+      if (!v.bubble) return;
+      v.bubble.style.display = behind ? "none" : "block";
+      v.bubble.style.left = `${x}px`;
+      v.bubble.style.top = `${y - i * 132}px`;
+    });
   }
 }
 
 /** 가로등 자리 — 조경섬 위에 세운다. 실제 주차장도 섬에 등을 박는다. */
 function lampPositions(lot) {
-  const byRow = new Map();
+  const bySide = new Map();
   for (const is of lot.islands) {
     const key = is.id.slice(-1);          // W 또는 E
-    if (!byRow.has(key)) byRow.set(key, []);
-    byRow.get(key).push(is);
+    if (!bySide.has(key)) bySide.set(key, []);
+    bySide.get(key).push(is);
   }
   const out = [];
-  for (const list of byRow.values()) {
+  for (const list of bySide.values()) {
     list.sort((a, b) => a.center[1] - b.center[1]);
     for (let i = 0; i < list.length; i += 2) {
       out.push([list[i].center[0], list[i].center[1]]);
@@ -200,16 +304,17 @@ function buildGraphOverlay(THREE, lot) {
   return g;
 }
 
-function renderLegend(guided, palette) {
+function renderLegend(guided) {
   const box = $("legend-items");
   box.innerHTML = "";
   for (const v of guided) {
-    const css = Palette.css(v.color);
+    const css = Palette.css(v.style.color);
     const el = document.createElement("div");
     el.className = "item";
     el.innerHTML =
-      `<span class="chip" style="background:${css};color:${css}"></span>` +
-      `<span>${v.plate}</span><span class="slot">→ ${v.slot.id}</span>`;
+      `<span class="chip" style="background:${css}"></span>` +
+      `<span>${v.plate}</span>` +
+      `<span class="slot">${v.style.name}색 → ${v.slot.id}</span>`;
     box.appendChild(el);
   }
 }

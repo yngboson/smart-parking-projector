@@ -1,13 +1,17 @@
 /**
- * 유도선 — 경로 중앙의 굵은 리본 + 진행 방향으로 흐르는 쉐브론.
+ * 유도선 — 연속된 굵은 색 띠 + 흰색 쉐브론 포인트.
  *
- * 설계 근거는 docs/DECISIONS.md D-006.
+ * 지하철 역사의 바닥 유도선을 참고한 디자인이다 (docs/DECISIONS.md D-006).
  *   - 차선처럼 양쪽에 두 줄을 그리지 않는다. 여러 대가 겹치면 구분이 안 된다.
- *   - 한국 고속도로 색상 안내선처럼 중앙에 한 줄, 진행 방향 쉐브론을 흘린다.
+ *   - **끊기지 않는 한 줄의 띠**로 그린다. 점선보다 따라가기 쉽다.
+ *   - 흰색 쉐브론을 일정 간격으로 얹어 진행 방향을 알린다.
  *   - **지나온 구간은 지운다.** 바닥에 남는 선의 총량이 줄어 혼란이 감소한다.
+ *   - 여러 차량의 선이 같은 통로를 지나면 **나란히 벌려서** 겹치지 않게 한다.
  *
- * 가산 혼합(additive)으로 그리는 이유: 빔 프로젝터는 빛을 더하는 장치이지
- * 페인트를 칠하는 장치가 아니다. 어두운 아스팔트 위에서 이 편이 훨씬 사실적이다.
+ * 색 띠는 가산 혼합이 아니라 일반 혼합으로 그린다. 가산으로 그리면 밝기를 올릴 때
+ * 색이 흰색으로 포화되어 차량별 색 구분이 사라지는데, 그 구분이 이 시스템의 핵심이다.
+ * 대신 밝기는 색 자체를 밝히는 방식으로 조절한다 — 어두울수록 투사물이 밝게 보이는
+ * 실제 프로젝터의 거동과도 맞는다.
  */
 
 const VERT = /* glsl */ `
@@ -29,10 +33,10 @@ const FRAG = /* glsl */ `
   uniform float uTime;
   uniform float uProgress;   // 0‥1, 차량이 지나온 비율
   uniform float uTotal;      // 경로 전체 길이 (m)
-  uniform float uPeriod;     // 쉐브론 주기 (m)
+  uniform float uPeriod;     // 쉐브론 간격 (m)
   uniform float uSpeed;      // 쉐브론이 흐르는 속도 (m/s)
-  uniform float uSkew;       // 쉐브론이 벌어지는 정도
-  uniform float uDuty;       // 쉐브론 두께 비율
+  uniform float uSkew;       // 쉐브론이 벌어지는 각도
+  uniform float uThick;      // 쉐브론 두께 (주기 대비 비율)
   uniform float uGlow;
 
   varying float vArc;
@@ -43,48 +47,64 @@ const FRAG = /* glsl */ `
     float head = uProgress * uTotal;
     if (vArc < head) discard;
 
-    // 차량 바로 앞에서 선이 갑자기 시작하지 않도록 부드럽게 살린다
-    float headFade = smoothstep(0.0, 2.5, vArc - head);
-    // 목표 주차면에 가까워지면 살짝 밝아진다
-    float tailBoost = 1.0 + 0.5 * smoothstep(6.0, 0.0, uTotal - vArc);
+    // 차량 바로 앞에서 띠가 뚝 시작하지 않도록 부드럽게 살린다
+    float headFade = smoothstep(0.0, 2.0, vArc - head);
 
-    // ── 쉐브론 ──
-    // 중앙이 가장자리보다 앞서게 위상을 밀면 진행 방향을 가리키는 V 가 된다
-    float s = (vArc - uTime * uSpeed) / uPeriod + abs(vSide) * uSkew;
-    float p = fract(s);
-    float band = smoothstep(0.0, 0.07, p) * (1.0 - smoothstep(uDuty - 0.07, uDuty, p));
+    float edgeDist = abs(vSide);
 
-    // ── 리본 가장자리 감쇠 ──
-    float edge = 1.0 - smoothstep(0.55, 1.0, abs(vSide));
+    // ── 띠 본체 ──
+    // 가장자리를 아주 살짝만 부드럽게 해서 도색한 띠처럼 각을 살린다
+    float body = 1.0 - smoothstep(0.86, 1.0, edgeDist);
 
-    // 은은한 바탕 + 밝은 쉐브론
-    float base = 0.20 * edge;
-    float lum = (base + band * edge * 1.15) * headFade * tailBoost * uGlow;
+    // ── 흰색 쉐브론 ──
+    // 중앙이 가장자리보다 앞서게 위상을 밀면 진행 방향을 가리키는 ∧ 가 된다
+    float s = (vArc - uTime * uSpeed) / uPeriod + edgeDist * uSkew;
+    float d = abs(fract(s) - 0.5);
+    float chev = 1.0 - smoothstep(uThick, uThick + 0.035, d);
+    chev *= body;
 
-    // 가산 혼합에서 밝기를 그대로 올리면 색이 흰색으로 포화된다.
-    // 차량별 색 구분이 이 시스템의 핵심이므로, 밝기는 알파로만 올리고
-    // 색상은 원래 색조를 유지시킨다.
-    float a = clamp(lum, 0.0, 1.0);
-    vec3 col = mix(uColor, vec3(1.0), band * 0.16);
-    gl_FragColor = vec4(col * min(lum, 1.35), a);
-    if (a < 0.004) discard;
+    // ── 가장자리 테두리 ──
+    // 여러 줄이 나란히 놓일 때 서로 번지지 않게 경계를 살짝 눌러준다
+    float rim = smoothstep(0.72, 0.94, edgeDist) * (1.0 - smoothstep(0.94, 1.0, edgeDist));
+
+    vec3 col = mix(uColor, vec3(1.0), chev * 0.94);
+    col = mix(col, uColor * 0.55, rim * 0.55);
+
+    // 어두운 환경일수록 투사물이 밝게 보인다
+    col *= 0.62 + 0.72 * uGlow;
+
+    float alpha = body * headFade * 0.94;
+    if (alpha < 0.01) discard;
+    gl_FragColor = vec4(col, alpha);
   }
 `;
 
-/** 폴리라인을 리본 메시로. 정점 간격이 균일해야 쉐브론이 일그러지지 않는다. */
-function buildRibbonGeometry(THREE, points, halfWidth) {
+/**
+ * 폴리라인을 리본 메시로 만든다.
+ *
+ * @param offset 통로 중심선에서 옆으로 밀 거리 (m). 여러 유도선을 나란히 놓을 때 쓴다.
+ *   시작과 끝에서는 0 으로 수렴시킨다 — 입구와 주차면 진입은 중앙으로 들어와야 하고,
+ *   그래야 차량이 주차면 한가운데로 향한다.
+ */
+function buildRibbonGeometry(THREE, points, halfWidth, offset) {
   const n = points.length;
   const pos = new Float32Array(n * 2 * 3);
   const arc = new Float32Array(n * 2);
   const side = new Float32Array(n * 2);
   const idx = [];
 
-  let acc = 0;
+  // 누적 거리를 먼저 구해야 시작/끝 수렴 구간을 계산할 수 있다
+  const cum = [0];
+  for (let i = 1; i < n; i++) cum.push(cum[i - 1] + points[i].distanceTo(points[i - 1]));
+  const total = cum[n - 1];
+
+  const TAPER_IN = 7.0;
+  const TAPER_OUT = 9.0;
+
   for (let i = 0; i < n; i++) {
     const p = points[i];
     const prev = points[Math.max(0, i - 1)];
     const next = points[Math.min(n - 1, i + 1)];
-    if (i > 0) acc += p.distanceTo(prev);
 
     // XZ 평면상의 접선과 그 수직
     let tx = next.x - prev.x;
@@ -93,12 +113,19 @@ function buildRibbonGeometry(THREE, points, halfWidth) {
     tx /= tl; tz /= tl;
     const nx = -tz, nz = tx;
 
+    const fadeIn = Math.min(1, cum[i] / TAPER_IN);
+    const fadeOut = Math.min(1, (total - cum[i]) / TAPER_OUT);
+    const off = offset * Math.min(fadeIn, fadeOut);
+
+    const cx = p.x + nx * off;
+    const cz = p.z + nz * off;
+
     for (const sgn of [-1, 1]) {
       const k = i * 2 + (sgn < 0 ? 0 : 1);
-      pos[k * 3] = p.x + nx * halfWidth * sgn;
+      pos[k * 3] = cx + nx * halfWidth * sgn;
       pos[k * 3 + 1] = p.y;
-      pos[k * 3 + 2] = p.z + nz * halfWidth * sgn;
-      arc[k] = acc;
+      pos[k * 3 + 2] = cz + nz * halfWidth * sgn;
+      arc[k] = cum[i];
       side[k] = sgn;
     }
 
@@ -114,11 +141,32 @@ function buildRibbonGeometry(THREE, points, halfWidth) {
   geo.setAttribute("aSide", new THREE.BufferAttribute(side, 1));
   geo.setIndex(idx);
   geo.computeBoundingSphere();
-  return { geometry: geo, total: acc };
+  return { geometry: geo, total, centers: buildCenters(THREE, points, cum, total, offset) };
+}
+
+/** 차량이 실제로 따라갈 선 — 리본과 같은 오프셋을 적용한 중심선. */
+function buildCenters(THREE, points, cum, total, offset) {
+  const out = [];
+  const TAPER_IN = 7.0;
+  const TAPER_OUT = 9.0;
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i];
+    const prev = points[Math.max(0, i - 1)];
+    const next = points[Math.min(points.length - 1, i + 1)];
+    let tx = next.x - prev.x;
+    let tz = next.z - prev.z;
+    const tl = Math.hypot(tx, tz) || 1;
+    tx /= tl; tz /= tl;
+    const off =
+      offset *
+      Math.min(Math.min(1, cum[i] / TAPER_IN), Math.min(1, (total - cum[i]) / TAPER_OUT));
+    out.push(new THREE.Vector3(p.x + -tz * off, p.y, p.z + tx * off));
+  }
+  return out;
 }
 
 /** 각진 통로 경로를 부드럽게 만든다. centripetal 은 직각 코너에서 튀지 않는다. */
-function smoothPath(THREE, points, spacing = 0.45) {
+function smoothPath(THREE, points, spacing = 0.4) {
   if (points.length < 3) return points;
   const curve = new THREE.CatmullRomCurve3(points, false, "centripetal", 0.5);
   const n = Math.max(8, Math.ceil(curve.getLength() / spacing));
@@ -129,22 +177,27 @@ export class GuidanceLine {
   /**
    * @param polyline 주차장 좌표 [[x, y], …]
    * @param color    이 차량에 배정된 고유색 (0xRRGGBB)
+   * @param opts.laneOffset 통로 중심선에서 옆으로 밀 거리 (m)
    */
-  constructor(THREE, polyline, color, { width = 0.62, height = 0.035 } = {}) {
+  constructor(THREE, polyline, color, opts = {}) {
+    const { width = 0.55, height = 0.035, laneOffset = 0 } = opts;
     this.THREE = THREE;
+
     const raw = polyline.map(([x, y]) => new THREE.Vector3(x, height, -y));
     const pts = smoothPath(THREE, raw);
-    const { geometry, total } = buildRibbonGeometry(THREE, pts, width / 2);
+    const { geometry, total, centers } = buildRibbonGeometry(
+      THREE, pts, width / 2, laneOffset
+    );
 
     this.uniforms = {
       uColor: { value: new THREE.Color(color) },
       uTime: { value: 0 },
       uProgress: { value: 0 },
       uTotal: { value: total },
-      uPeriod: { value: 2.6 },
-      uSpeed: { value: 3.4 },
-      uSkew: { value: 0.16 },
-      uDuty: { value: 0.42 },
+      uPeriod: { value: 3.4 },
+      uSpeed: { value: 2.2 },
+      uSkew: { value: 0.085 },
+      uThick: { value: 0.055 },
       uGlow: { value: 1.0 },
     };
 
@@ -156,13 +209,12 @@ export class GuidanceLine {
         uniforms: this.uniforms,
         transparent: true,
         depthWrite: false,
-        blending: THREE.AdditiveBlending,
         side: THREE.DoubleSide,
       })
     );
     this.mesh.renderOrder = 5;
     this.total = total;
-    this.points = pts;
+    this.points = centers;
   }
 
   /** 차량이 지나온 비율 (0‥1). 이 앞쪽만 남기고 지운다. */
@@ -209,12 +261,11 @@ export class GuidanceLine {
  */
 export class TargetMarker {
   constructor(THREE, slot, color) {
-    const g = new THREE.PlaneGeometry(slot.width * 0.94, slot.length * 0.94);
+    const g = new THREE.PlaneGeometry(slot.width * 0.9, slot.length * 0.9);
     this.material = new THREE.MeshBasicMaterial({
       color,
       transparent: true,
       opacity: 0.3,
-      blending: THREE.AdditiveBlending,
       depthWrite: false,
     });
     this.mesh = new THREE.Mesh(g, this.material);
@@ -226,7 +277,7 @@ export class TargetMarker {
 
   update(dt) {
     this.t += dt;
-    this.material.opacity = 0.18 + 0.20 * (0.5 + 0.5 * Math.sin(this.t * 2.4));
+    this.material.opacity = 0.22 + 0.24 * (0.5 + 0.5 * Math.sin(this.t * 2.4));
   }
 
   dispose() {

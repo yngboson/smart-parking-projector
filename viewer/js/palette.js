@@ -1,67 +1,78 @@
 /**
- * 차량별 고유색 배정.
+ * 차량별 고유색과 유도선 차선 배정.
  *
- * 요구사항 (docs/DECISIONS.md D-006):
- *   - 동시에 안내 중인 차량끼리 확실히 구분될 것
- *   - 어두운 아스팔트 위에서 잘 보일 것
- *   - 주차를 마치기 전까지 색을 재사용하지 말 것
+ * 색은 지하철 역사의 바닥 유도선을 참고했다 (docs/DECISIONS.md D-006).
+ * 형광색이 아니라 **톤다운된 원색**이다. 이유:
+ *   - 채도가 너무 높으면 여러 줄이 나란히 있을 때 서로 번져 보인다
+ *   - 실제 도색/투사물의 색감에 가깝다
  *
- * 12색은 색상환을 고르게 돌면서 명도를 높게 유지하도록 손으로 고른 값이다.
- * 알고리즘으로 생성한 색보다 사람 눈에 구분이 잘 된다.
+ * 차선(lane)은 여러 유도선이 같은 통로를 지날 때 겹치지 않도록 나란히 벌리는 값이다.
+ * 지하철 유도선이 여러 갈래를 나란히 그리는 것과 같은 방식이다.
  */
 
+/** 톤다운된 원색 10종. 색상환을 고르게 돌면서 명도·채도를 맞춰 골랐다. */
 const BASE = [
-  0xff4d5a, 0xffa63d, 0xffe14d, 0x8ede3a,
-  0x26d07c, 0x2fd6c3, 0x45c2ff, 0x5b7cff,
-  0xa97bff, 0xf06bff, 0xff7aa8, 0xc9b08a,
+  { hex: 0xc4453e, name: "빨강" },
+  { hex: 0xd2762f, name: "주황" },
+  { hex: 0xe0b138, name: "노랑" },
+  { hex: 0x7fa33c, name: "연두" },
+  { hex: 0x3e8b57, name: "초록" },
+  { hex: 0x2e8a8a, name: "청록" },
+  { hex: 0x4a92c4, name: "하늘" },
+  { hex: 0x35509e, name: "파랑" },
+  { hex: 0x7a4e9c, name: "보라" },
+  { hex: 0xc55f86, name: "분홍" },
 ];
 
-/** 12색을 다 쓰면 황금각으로 이어서 만든다 (그래도 서로 벌어진다). */
-function golden(i) {
-  const h = ((i * 137.508) % 360) / 360;
-  const l = i % 2 === 0 ? 0.68 : 0.60;
-  return hslToHex(h, 0.82, l);
-}
+/** 나란히 놓을 수 있는 최대 줄 수. 통로 폭(6m)을 넘지 않게 잡는다. */
+export const MAX_LANES = 6;
 
-function hslToHex(h, s, l) {
-  const f = (n) => {
-    const k = (n + h * 12) % 12;
-    const a = s * Math.min(l, 1 - l);
-    return Math.round(255 * (l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1))));
-  };
-  return (f(0) << 16) | (f(8) << 8) | f(4);
-}
+/** 줄 사이 간격 (m). */
+export const LANE_PITCH = 0.72;
 
 export class Palette {
   constructor() {
-    this.assigned = new Map();  // plate → color
-    this.inUse = new Set();     // color
-    this.cursor = 0;
+    this.assigned = new Map();   // plate → { color, name, lane }
+    this.usedColors = new Set();
+    this.usedLanes = new Set();
   }
 
-  /** 이 차량의 색. 없으면 사용 중이 아닌 색 중에서 새로 준다. */
+  /**
+   * 이 차량의 유도선 스타일. 없으면 사용 중이 아닌 색과 차선을 새로 배정한다.
+   * @returns {{color: number, name: string, lane: number}}
+   */
   acquire(plate) {
     const existing = this.assigned.get(plate);
-    if (existing !== undefined) return existing;
+    if (existing) return existing;
 
-    let color = BASE.find((c) => !this.inUse.has(c));
-    if (color === undefined) {
-      do {
-        color = golden(this.cursor++);
-      } while (this.inUse.has(color) && this.cursor < 512);
-    }
+    const entry =
+      BASE.find((c) => !this.usedColors.has(c.hex)) ??
+      BASE[this.assigned.size % BASE.length];
 
-    this.assigned.set(plate, color);
-    this.inUse.add(color);
-    return color;
+    let lane = 0;
+    while (lane < MAX_LANES && this.usedLanes.has(lane)) lane++;
+    if (lane >= MAX_LANES) lane = this.assigned.size % MAX_LANES;
+
+    const style = { color: entry.hex, name: entry.name, lane };
+    this.assigned.set(plate, style);
+    this.usedColors.add(entry.hex);
+    this.usedLanes.add(lane);
+    return style;
   }
 
-  /** 주차 완료/출차. 이제부터 다른 차가 이 색을 쓸 수 있다. */
+  /** 주차 완료/출차. 색과 차선을 다음 차량이 쓸 수 있게 반납한다. */
   release(plate) {
-    const c = this.assigned.get(plate);
-    if (c === undefined) return;
+    const s = this.assigned.get(plate);
+    if (!s) return;
     this.assigned.delete(plate);
-    this.inUse.delete(c);
+    this.usedColors.delete(s.color);
+    this.usedLanes.delete(s.lane);
+  }
+
+  /** 차선 번호 → 통로 중심선에서의 횡방향 오프셋 (m). 가운데를 기준으로 벌린다. */
+  static laneOffset(lane) {
+    const half = (MAX_LANES - 1) / 2;
+    return (lane - half) * LANE_PITCH;
   }
 
   static css(color) {
