@@ -14,6 +14,8 @@
  * 실제 프로젝터의 거동과도 맞는다.
  */
 
+import { makeTrack } from "/js/track.js";
+
 const VERT = /* glsl */ `
   attribute float aArc;    // 경로 시작점에서의 누적 거리 (m)
   attribute float aSide;   // 리본 횡방향 -1 ‥ +1
@@ -80,31 +82,23 @@ const FRAG = /* glsl */ `
 `;
 
 /**
- * 폴리라인을 리본 메시로 만든다.
- *
- * @param offset 통로 중심선에서 옆으로 밀 거리 (m). 여러 유도선을 나란히 놓을 때 쓴다.
- *   시작과 끝에서는 0 으로 수렴시킨다 — 입구와 주차면 진입은 중앙으로 들어와야 하고,
- *   그래야 차량이 주차면 한가운데로 향한다.
+ * 궤적을 따라 리본 메시를 만든다. 궤적의 점들은 이미 차선 오프셋이 적용된
+ * 중심선이므로 여기서는 좌우로 halfWidth 만큼 벌리기만 하면 된다.
  */
-function buildRibbonGeometry(THREE, points, halfWidth, offset) {
+function buildRibbonGeometry(THREE, track, halfWidth) {
+  const points = track.points;
   const n = points.length;
   const pos = new Float32Array(n * 2 * 3);
   const arc = new Float32Array(n * 2);
   const side = new Float32Array(n * 2);
   const idx = [];
 
-  // 누적 거리를 먼저 구해야 시작/끝 수렴 구간을 계산할 수 있다
-  const cum = [0];
-  for (let i = 1; i < n; i++) cum.push(cum[i - 1] + points[i].distanceTo(points[i - 1]));
-  const total = cum[n - 1];
-
-  const TAPER_IN = 7.0;
-  const TAPER_OUT = 9.0;
-
+  let acc = 0;
   for (let i = 0; i < n; i++) {
     const p = points[i];
     const prev = points[Math.max(0, i - 1)];
     const next = points[Math.min(n - 1, i + 1)];
+    if (i > 0) acc += p.distanceTo(prev);
 
     // XZ 평면상의 접선과 그 수직
     let tx = next.x - prev.x;
@@ -113,19 +107,12 @@ function buildRibbonGeometry(THREE, points, halfWidth, offset) {
     tx /= tl; tz /= tl;
     const nx = -tz, nz = tx;
 
-    const fadeIn = Math.min(1, cum[i] / TAPER_IN);
-    const fadeOut = Math.min(1, (total - cum[i]) / TAPER_OUT);
-    const off = offset * Math.min(fadeIn, fadeOut);
-
-    const cx = p.x + nx * off;
-    const cz = p.z + nz * off;
-
     for (const sgn of [-1, 1]) {
       const k = i * 2 + (sgn < 0 ? 0 : 1);
-      pos[k * 3] = cx + nx * halfWidth * sgn;
+      pos[k * 3] = p.x + nx * halfWidth * sgn;
       pos[k * 3 + 1] = p.y;
-      pos[k * 3 + 2] = cz + nz * halfWidth * sgn;
-      arc[k] = cum[i];
+      pos[k * 3 + 2] = p.z + nz * halfWidth * sgn;
+      arc[k] = acc;
       side[k] = sgn;
     }
 
@@ -141,36 +128,7 @@ function buildRibbonGeometry(THREE, points, halfWidth, offset) {
   geo.setAttribute("aSide", new THREE.BufferAttribute(side, 1));
   geo.setIndex(idx);
   geo.computeBoundingSphere();
-  return { geometry: geo, total, centers: buildCenters(THREE, points, cum, total, offset) };
-}
-
-/** 차량이 실제로 따라갈 선 — 리본과 같은 오프셋을 적용한 중심선. */
-function buildCenters(THREE, points, cum, total, offset) {
-  const out = [];
-  const TAPER_IN = 7.0;
-  const TAPER_OUT = 9.0;
-  for (let i = 0; i < points.length; i++) {
-    const p = points[i];
-    const prev = points[Math.max(0, i - 1)];
-    const next = points[Math.min(points.length - 1, i + 1)];
-    let tx = next.x - prev.x;
-    let tz = next.z - prev.z;
-    const tl = Math.hypot(tx, tz) || 1;
-    tx /= tl; tz /= tl;
-    const off =
-      offset *
-      Math.min(Math.min(1, cum[i] / TAPER_IN), Math.min(1, (total - cum[i]) / TAPER_OUT));
-    out.push(new THREE.Vector3(p.x + -tz * off, p.y, p.z + tx * off));
-  }
-  return out;
-}
-
-/** 각진 통로 경로를 부드럽게 만든다. centripetal 은 직각 코너에서 튀지 않는다. */
-function smoothPath(THREE, points, spacing = 0.4) {
-  if (points.length < 3) return points;
-  const curve = new THREE.CatmullRomCurve3(points, false, "centripetal", 0.5);
-  const n = Math.max(8, Math.ceil(curve.getLength() / spacing));
-  return curve.getSpacedPoints(n);
+  return { geometry: geo, total: acc };
 }
 
 export class GuidanceLine {
@@ -183,11 +141,8 @@ export class GuidanceLine {
     const { width = 0.55, height = 0.035, laneOffset = 0 } = opts;
     this.THREE = THREE;
 
-    const raw = polyline.map(([x, y]) => new THREE.Vector3(x, height, -y));
-    const pts = smoothPath(THREE, raw);
-    const { geometry, total, centers } = buildRibbonGeometry(
-      THREE, pts, width / 2, laneOffset
-    );
+    this.track = makeTrack(THREE, polyline, { laneOffset, height });
+    const { geometry, total } = buildRibbonGeometry(THREE, this.track, width / 2);
 
     this.uniforms = {
       uColor: { value: new THREE.Color(color) },
@@ -214,7 +169,6 @@ export class GuidanceLine {
     );
     this.mesh.renderOrder = 5;
     this.total = total;
-    this.points = centers;
   }
 
   /** 차량이 지나온 비율 (0‥1). 이 앞쪽만 남기고 지운다. */
@@ -232,21 +186,7 @@ export class GuidanceLine {
 
   /** 경로 시작점에서 d 미터 지점의 위치와 진행 방향. */
   sample(d) {
-    const pts = this.points;
-    let acc = 0;
-    for (let i = 0; i < pts.length - 1; i++) {
-      const seg = pts[i].distanceTo(pts[i + 1]);
-      if (acc + seg >= d) {
-        const t = seg === 0 ? 0 : (d - acc) / seg;
-        const p = pts[i].clone().lerp(pts[i + 1], t);
-        const dir = pts[i + 1].clone().sub(pts[i]).normalize();
-        return { position: p, heading: Math.atan2(-dir.z, dir.x) };
-      }
-      acc += seg;
-    }
-    const last = pts[pts.length - 1];
-    const dir = last.clone().sub(pts[pts.length - 2]).normalize();
-    return { position: last.clone(), heading: Math.atan2(-dir.z, dir.x) };
+    return this.track.sample(d);
   }
 
   dispose() {

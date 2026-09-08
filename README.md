@@ -104,6 +104,7 @@ pytest tests/ -v
 | [`CLAUDE.md`](CLAUDE.md) | 이 저장소에서 작업할 때의 규칙 (계층 분리 계약) |
 | [`docs/PLAN.md`](docs/PLAN.md) | 전체 구현 계획과 로드맵 |
 | [`docs/DECISIONS.md`](docs/DECISIONS.md) | 설계 결정과 그 근거 (ADR) |
+| [`docs/HANDOFF.md`](docs/HANDOFF.md) | **인수인계** — 진행 상황, 미해결 이슈, 다음 작업 |
 
 ---
 

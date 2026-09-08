@@ -1,23 +1,27 @@
 /**
  * 뷰어 부트스트랩.
  *
- * 현재 단계(도면 미리보기)에서는 `demo.js` 가 만든 예시 데이터를 그린다.
- * 4단계에서 이 자리에 실제 시뮬레이션 프레임 스트림이 들어온다. 프레임 포맷은
- * 라이브(WebSocket)와 녹화본(trace.jsonl)이 동일하므로 뷰어 코드는 한 벌만 둔다
- * (docs/DECISIONS.md D-005).
+ * 현재 단계(도면 미리보기)에서는 `demo.js` 의 진행자가 만든 지시를 그린다.
+ * 3~4단계에서 이 자리에 실제 Python 시뮬레이션 프레임 스트림이 들어온다.
+ * 프레임 포맷은 라이브(WebSocket)와 녹화본(trace.jsonl)이 동일하므로 뷰어 코드는
+ * 한 벌만 둔다 (docs/DECISIONS.md D-005).
  */
 
 import { Stage, THREE } from "/js/scene.js";
 import { buildFloor } from "/js/lot_floor.js";
 import { GuidanceLine, TargetMarker } from "/js/guidance.js";
+import { makeTrack } from "/js/track.js";
 import { Palette } from "/js/palette.js";
 import { VehicleModels, buildContactShadow, pickBodyColor } from "/js/vehicles.js";
-import { buildDemoScenario } from "/js/demo.js";
+import { DemoDirector } from "/js/demo.js";
 
 const $ = (id) => document.getElementById(id);
 
 /** 입구에서 안내를 받고 출발하기까지 정차하는 시간 (초). */
 const GATE_PAUSE = 3.4;
+
+/** 유도선 끝에 도착한 뒤 후진 주차에 걸리는 시간 (초). 2단계 실측값 13.8초. */
+const PARK_MANEUVER = 4.0;
 
 export async function boot() {
   const lot = await fetch("/api/layout").then((r) => r.json());
@@ -30,12 +34,10 @@ export async function boot() {
   const models = new VehicleModels(THREE);
   await models.load();
 
-  const palette = new Palette();
-  const world = new App(stage, lot, models, palette);
-  await world.buildDemo();
+  const world = new App(stage, lot, models);
+  await world.start();
 
   wireControls(stage, world);
-  updateStats(lot, world);
 
   $("lot-name").textContent =
     `${lot.name} · ${lot.slots.length}면 · ${Math.round(lot.bounds[2] - lot.bounds[0])} × ` +
@@ -60,115 +62,177 @@ export async function boot() {
 }
 
 class App {
-  constructor(stage, lot, models, palette) {
+  constructor(stage, lot, models) {
     this.stage = stage;
     this.lot = lot;
     this.models = models;
-    this.palette = palette;
-    this.cars = [];
-    this.guided = [];
+
+    this.palette = new Palette();
+    this.director = new DemoDirector(lot);
+    this.bubbles = new BubbleLayer(stage, lot);
+
+    this.parked = new Map();    // slotId → THREE.Group
+    this.movers = [];           // 도착·출차로 움직이는 중인 차량
     this.glow = 1.0;
 
-    this.bubbles = new BubbleLayer(stage, lot);
     this.graphGroup = buildGraphOverlay(THREE, lot);
     this.graphGroup.visible = false;
     stage.scene.add(this.graphGroup);
   }
 
-  async buildDemo() {
-    const scenario = buildDemoScenario(this.lot);
-    const modelNames = this.models.names;
-
-    // 이미 주차된 차량들
-    for (const slot of scenario.parked) {
-      const seed = hash(slot.id);
-      const car = await this.models.create(pickModel(modelNames, seed), {
-        length: 4.6, width: 1.85, color: pickBodyColor(seed),
-      });
+  async start() {
+    for (const { slot, plate } of this.director.seedParked(0.45)) {
+      const car = await this.makeCar(hash(slot.id));
       placeInSlot(car, slot);
-      car.add(buildContactShadow(THREE, 4.6, 1.85));
       this.stage.scene.add(car);
-      this.cars.push(car);
+      this.parked.set(slot.id, car);
     }
+    this.refreshStats();
+  }
 
-    // 유도선을 따라 이동 중인 차량들.
-    // 차선(lane)을 서로 다르게 배정해 같은 통로에서도 나란히 놓이게 한다.
-    for (const g of scenario.guided) {
-      const style = this.palette.acquire(g.plate);
-      const line = new GuidanceLine(THREE, g.polyline, style.color, {
-        laneOffset: Palette.laneOffset(style.lane),
-      });
-      const marker = new TargetMarker(THREE, g.slot, style.color);
-      this.stage.scene.add(line.mesh, marker.mesh);
-
-      const car = await this.models.create(pickModel(modelNames, g.colorSeed), {
-        length: 4.7, width: 1.85, color: pickBodyColor(g.colorSeed),
-      });
-      car.add(buildContactShadow(THREE, 4.7, 1.85));
-      car.visible = false;
-      this.stage.scene.add(car);
-
-      this.guided.push({
-        ...g, style, line, marker, car,
-        travelled: 0, t: 0, phase: "waiting", bubble: null,
-      });
-    }
-
-    renderLegend(this.guided);
+  async makeCar(seed) {
+    const car = await this.models.create(pickModel(this.models.names, seed), {
+      length: 4.7, width: 1.85, color: pickBodyColor(seed),
+    });
+    car.add(buildContactShadow(THREE, 4.7, 1.85));
+    return car;
   }
 
   setGlow(g) {
     this.glow = g;
-    for (const v of this.guided) v.line.setGlow(g);
+    for (const m of this.movers) m.line?.setGlow(g);
   }
 
   update(dt) {
-    for (const v of this.guided) {
-      v.t += dt;
-      v.line.update(dt);
-      v.marker.update(dt);
+    const jobs = this.director.update(dt);
+    for (const job of jobs.arrivals) this.spawnArrival(job);
+    for (const job of jobs.departures) this.spawnDeparture(job);
 
-      if (v.phase === "waiting") {
-        v.car.visible = false;
-        if (v.t >= v.startDelay) this.enterGate(v);
-        else continue;
-      }
+    for (const m of this.movers) this.advance(m, dt);
 
-      if (v.phase === "gate") {
-        // 입구에서 정차한 채 안내를 받는다
-        v.car.visible = true;
-        if (v.t >= v.startDelay + GATE_PAUSE) {
-          this.bubbles.remove(v);
-          v.phase = "driving";
-        }
-      } else if (v.phase === "driving") {
-        v.travelled += v.speed * dt;
-        if (v.travelled >= v.line.total) {
-          // 미리보기용 루프 — 실제 시뮬레이션에서는 여기서 주차가 끝난다
-          v.travelled = 0;
-          v.t = 0;
-          v.phase = "waiting";
-          v.line.setProgress(0);
-          v.car.visible = false;
-          continue;
-        }
-      }
-
-      const { position, heading } = v.line.sample(v.travelled);
-      v.car.position.copy(position);
-      v.car.position.y = 0;
-      v.car.rotation.y = heading;
-      v.line.setProgress(v.travelled / v.line.total);
-    }
+    const before = this.movers.length;
+    this.movers = this.movers.filter((m) => !m.done);
+    if (this.movers.length !== before) this.refreshStats();
 
     this.bubbles.update();
   }
 
-  enterGate(v) {
-    v.phase = "gate";
-    v.travelled = 0;
-    v.line.setProgress(0);
-    this.bubbles.show(v);
+  // ── 도착 ──────────────────────────────────────────────────────
+
+  async spawnArrival(job) {
+    const style = this.palette.acquire(job.plate);
+    const line = new GuidanceLine(THREE, job.polyline, style.color, {
+      laneOffset: Palette.laneOffset(style.lane),
+    });
+    const marker = new TargetMarker(THREE, job.slot, style.color);
+    line.setGlow(this.glow);
+    this.stage.scene.add(line.mesh, marker.mesh);
+
+    const car = await this.makeCar(job.seed);
+    this.stage.scene.add(car);
+
+    const mover = {
+      kind: "arrival",
+      plate: job.plate, slot: job.slot, style, car, line, marker,
+      track: line.track, total: line.total,
+      speed: job.speed, travelled: 0, phase: "gate", timer: 0, done: false,
+    };
+    this.movers.push(mover);
+    this.bubbles.show(mover);
+    this.place(mover, 0);
+    this.refreshStats();
+  }
+
+  /** 유도선 끝에 도착 → 후진 주차 → 그 자리를 점유한 채로 남는다. */
+  finishArrival(m) {
+    m.line.dispose();
+    m.marker.dispose();
+    this.stage.scene.remove(m.line.mesh, m.marker.mesh);
+    this.palette.release(m.plate);
+
+    placeInSlot(m.car, m.slot);
+    this.parked.set(m.slot.id, m.car);
+    this.director.notifyParked(m.plate, m.slot.id);
+    m.done = true;
+  }
+
+  // ── 출차 ──────────────────────────────────────────────────────
+
+  spawnDeparture(job) {
+    const car = this.parked.get(job.slot.id);
+    if (!car) return;
+    this.parked.delete(job.slot.id);
+
+    // 출차 차량에는 유도선을 그리지 않는다. 나가는 길은 안내가 필요 없고,
+    // 화면에 선이 늘어나면 정작 안내가 필요한 차의 선이 묻힌다.
+    const track = makeTrack(THREE, job.polyline, { height: 0.0 });
+    this.movers.push({
+      kind: "departure",
+      plate: job.plate, slot: job.slot, car, line: null, marker: null,
+      track, total: track.total,
+      speed: job.speed, travelled: 0, phase: "leaving", timer: 0, done: false,
+    });
+    this.refreshStats();
+  }
+
+  // ── 공통 진행 ─────────────────────────────────────────────────
+
+  advance(m, dt) {
+    m.line?.update(dt);
+    m.marker?.update(dt);
+
+    if (m.phase === "gate") {
+      m.timer += dt;
+      if (m.timer >= GATE_PAUSE) {
+        this.bubbles.remove(m);
+        m.phase = "driving";
+      }
+      return;
+    }
+
+    if (m.phase === "parking") {
+      // 후진 주차 중 — 궤적은 2단계 maneuver.py 가 계산하며, 뷰어에서는
+      // 3~4단계에 실제 자세를 스트림으로 받아 그린다. 지금은 시간만 흘린다.
+      m.timer += dt;
+      if (m.timer >= PARK_MANEUVER) this.finishArrival(m);
+      return;
+    }
+
+    m.travelled += m.speed * dt;
+
+    if (m.travelled >= m.total) {
+      if (m.kind === "arrival") {
+        m.phase = "parking";
+        m.timer = 0;
+        m.line.setProgress(1);
+        return;
+      }
+      // 출차 완료 — 주차장을 떠났다
+      this.stage.scene.remove(m.car);
+      m.done = true;
+      return;
+    }
+
+    this.place(m, m.travelled);
+  }
+
+  place(m, d) {
+    const { position, heading } = m.track.sample(d);
+    m.car.position.copy(position);
+    m.car.position.y = 0;
+    m.car.rotation.y = heading;
+    m.line?.setProgress(d / m.total);
+  }
+
+  refreshStats() {
+    const d = this.director;
+    const total = this.lot.slots.length;
+    const occupied = d.occupancy;
+    $("s-slots").textContent = total;
+    $("s-occ").innerHTML = `${Math.round((occupied / total) * 100)}<small>%</small>`;
+    $("s-guided").textContent = this.movers.filter((m) => m.kind === "arrival").length;
+    $("s-reroute").textContent = "0";
+    renderLegend(this.movers.filter((m) => m.kind === "arrival"));
   }
 }
 
@@ -194,35 +258,35 @@ class BubbleLayer {
       : new THREE.Vector3(0, 5, 0);
   }
 
-  show(v) {
-    const css = Palette.css(v.style.color);
+  show(m) {
+    const css = Palette.css(m.style.color);
     const walk = this.gate
-      ? Math.round(Math.hypot(v.slot.center[0] - this.gate[0], v.slot.center[1] - this.gate[1]))
+      ? Math.round(Math.hypot(m.slot.center[0] - this.gate[0], m.slot.center[1] - this.gate[1]))
       : 0;
 
     const el = document.createElement("div");
     el.className = "bubble";
     el.innerHTML =
       `<div class="tag">번호판 인식</div>` +
-      `<div class="plate">${v.plate}</div>` +
+      `<div class="plate">${m.plate}</div>` +
       `<div class="msg">` +
       `<span class="swatch" style="background:${css}"></span>` +
-      `<b style="color:${css}">${v.style.name}</b>색 선을 따라가 주시기 바랍니다` +
+      `<b style="color:${css}">${m.style.name}</b>색 선을 따라가 주시기 바랍니다` +
       `</div>` +
-      `<div class="dest">배정 주차면 <b>${v.slot.id}</b> · 출입구까지 도보 <b>${walk}m</b></div>`;
+      `<div class="dest">배정 주차면 <b>${m.slot.id}</b> · 출입구까지 도보 <b>${walk}m</b></div>`;
 
     this.root.appendChild(el);
-    v.bubble = el;
-    this.active.push(v);
+    m.bubble = el;
+    this.active.push(m);
   }
 
-  remove(v) {
-    if (!v.bubble) return;
-    const el = v.bubble;
+  remove(m) {
+    if (!m.bubble) return;
+    const el = m.bubble;
     el.classList.add("leaving");
     setTimeout(() => el.remove(), 360);
-    v.bubble = null;
-    this.active = this.active.filter((x) => x !== v);
+    m.bubble = null;
+    this.active = this.active.filter((x) => x !== m);
   }
 
   /** 3D 앵커 위치를 화면 좌표로 투영해 말풍선을 붙인다. */
@@ -235,11 +299,11 @@ class BubbleLayer {
     const y = (-p.y * 0.5 + 0.5) * innerHeight;
 
     // 여러 대가 동시에 들어오면 위로 쌓는다
-    this.active.forEach((v, i) => {
-      if (!v.bubble) return;
-      v.bubble.style.display = behind ? "none" : "block";
-      v.bubble.style.left = `${x}px`;
-      v.bubble.style.top = `${y - i * 132}px`;
+    this.active.forEach((m, i) => {
+      if (!m.bubble) return;
+      m.bubble.style.display = behind ? "none" : "block";
+      m.bubble.style.left = `${x}px`;
+      m.bubble.style.top = `${y - i * 132}px`;
     });
   }
 }
@@ -304,28 +368,23 @@ function buildGraphOverlay(THREE, lot) {
   return g;
 }
 
-function renderLegend(guided) {
+function renderLegend(arrivals) {
   const box = $("legend-items");
   box.innerHTML = "";
-  for (const v of guided) {
-    const css = Palette.css(v.style.color);
+  if (!arrivals.length) {
+    box.innerHTML = `<div class="item"><span class="slot">안내 중인 차량 없음</span></div>`;
+    return;
+  }
+  for (const m of arrivals) {
+    const css = Palette.css(m.style.color);
     const el = document.createElement("div");
     el.className = "item";
     el.innerHTML =
       `<span class="chip" style="background:${css}"></span>` +
-      `<span>${v.plate}</span>` +
-      `<span class="slot">${v.style.name}색 → ${v.slot.id}</span>`;
+      `<span>${m.plate}</span>` +
+      `<span class="slot">${m.style.name}색 → ${m.slot.id}</span>`;
     box.appendChild(el);
   }
-}
-
-function updateStats(lot, world) {
-  const occupied = world.cars.length;
-  $("s-slots").textContent = lot.slots.length;
-  $("s-occ").innerHTML =
-    `${Math.round((occupied / lot.slots.length) * 100)}<small>%</small>`;
-  $("s-guided").textContent = world.guided.length;
-  $("s-reroute").textContent = "0";
 }
 
 function wireControls(stage, world) {
