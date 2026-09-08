@@ -57,7 +57,16 @@ sim/common/   ↑ 세 계층이 공유하는 불변 값 타입(DTO)만
 **허용됨**: 번호판별 과거 관측 이력을 관제가 누적·학습하는 것. 센서 기록의 집계일 뿐이며
 실제 시스템도 할 수 있는 일입니다 (복구 전략 `reputation_aware` 가 이걸 씁니다).
 
-### 4. 커밋 전 필수 확인
+### 4. 헷갈리기 쉬운 경계
+
+| 무엇 | 어디에 | 왜 |
+|---|---|---|
+| 차량 제원·제어 입력 (`VehicleSpec`, `ControlInput`) | `common/vehicle.py` | 세 계층이 다 알아야 한다. 운전자는 자기 회전반경을 알고, world 는 적분하고, control 은 차종 제약을 본다 |
+| 주차 진입 궤적 기하 (`maneuver.py`) | `common/` | 순수 기하다. 정책도 제어도 없다 |
+| 자전거 모델 적분 (`physics.py`) | `world/` | 시뮬레이터의 물리 |
+| 경로 추종 · 속도 조절 (`driving.py`) | `agents/` | **운전 기술이지 시뮬레이터 기능이 아니다.** 관제가 선을 그려줘도 따라가는 건 사람이고, 사람마다 잘하고 못한다 |
+
+### 5. 커밋 전 필수 확인
 
 ```bash
 pytest tests/test_layer_isolation.py -v     # 반드시 통과
@@ -81,10 +90,10 @@ grep -rn "compliance" sim/control/          # 결과가 비어 있어야 함
 ## 디렉터리 규약
 
 ```
-sim/common/      geometry.py, ids.py, messages.py, lotmap.py
+sim/common/      geometry.py, ids.py, messages.py, lotmap.py, vehicle.py, maneuver.py
 sim/world/       lot_builder.py, physics.py, sensors.py, projector.py, simulation.py
 sim/control/     api.py, state.py, routing.py, cost.py, allocators/, recovery/
-sim/agents/      driver.py, vehicle.py, perception.py
+sim/agents/      driver.py, vehicle.py, perception.py, driving.py
 sim/scenarios/   *.yaml  (도착률, 성향 분포, 시드, 사용할 전략 이름)
 sim/metrics/     collector.py, trace_writer.py
 sim/experiments/ run_matrix.py, report.py
