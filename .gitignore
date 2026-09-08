@@ -1,0 +1,52 @@
+# ── 절대 커밋 금지: 자격증명/토큰 ──
+.env
+.env.*
+*.token
+*token*
+*secret*
+*credential*
+*.pem
+*.key
+*.pfx
+*.p12
+.netrc
+_netrc
+.npmrc
+auth.json
+gh_token*
+id_rsa*
+
+# ── 개인/로컬 에이전트 설정 ──
+# 사용자 전역 지침(RTK 등 개인 도구 설정)은 이 저장소에 넣지 않는다.
+.claude/
+.mcp.json
+CLAUDE.local.md
+
+# ── Python ──
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# ── 에디터/OS ──
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── 대용량 산출물 ──
+runs/
+!runs/demo/
+!runs/demo/trace.jsonl
+*.mp4
+*.mov
+
+# ── 3D 모델 ──
+# STL 은 기본적으로 커밋한다(다른 세션도 같은 화면을 봐야 하므로).
+# 단일 파일이 50MB 를 넘으면 GitHub 경고, 100MB 면 거부되므로 그때 Git LFS 로 전환할 것.
+# (docs/DECISIONS.md 의 D-007 참조)
