@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import heapq
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -139,6 +140,47 @@ class LotMap:
 
     def node_pos(self, node: NodeId) -> Vec2:
         return self.nodes[node].pos
+
+    def shortest_path(self, src: NodeId, dst: NodeId) -> list[NodeId] | None:
+        """거리만 보는 최단 경로. 길이 없으면 None.
+
+        도면 자체가 가진 성질이므로 여기 둔다. 관제의 경로 탐색
+        (`sim.control.routing`) 은 이것과 다른 물건이다 — 저쪽은 회전 페널티와
+        혼잡 비용을 얹어 "어느 길로 안내할까"를 정한다.
+
+        이것은 **길이 있는가**를 묻는 용도다. 운전자가 출구를 찾아 나가는 것처럼
+        정책이 개입하지 않는 이동, 그리고 도면 연결성 검사에 쓴다.
+        """
+        if src not in self.nodes or dst not in self.nodes:
+            return None
+        if src == dst:
+            return [src]
+
+        dist: dict[NodeId, float] = {src: 0.0}
+        came: dict[NodeId, NodeId] = {}
+        heap: list[tuple[float, int, NodeId]] = [(0.0, 0, src)]
+        tie = 0
+        seen: set[NodeId] = set()
+
+        while heap:
+            d, _t, node = heapq.heappop(heap)
+            if node in seen:
+                continue
+            seen.add(node)
+            if node == dst:
+                path = [node]
+                while path[-1] != src:
+                    path.append(came[path[-1]])
+                path.reverse()
+                return path
+            for nxt, length in self.successors(node):
+                nd = d + length
+                if nd < dist.get(nxt, float("inf")):
+                    dist[nxt] = nd
+                    came[nxt] = node
+                    tie += 1
+                    heapq.heappush(heap, (nd, tie, nxt))
+        return None
 
     # ── 도보 거리 ──────────────────────────────────────────────────
 

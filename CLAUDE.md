@@ -70,9 +70,13 @@ sim/common/   ↑ 세 계층이 공유하는 불변 값 타입(DTO)만
 ### 5. 커밋 전 필수 확인
 
 ```bash
-pytest tests/test_layer_isolation.py -v     # 반드시 통과
-grep -rn "compliance" sim/control/          # 결과가 비어 있어야 함
+pytest tests/test_layer_isolation.py tests/test_traffic.py -v   # 반드시 통과
+grep -rn "compliance" sim/control/                              # 결과가 비어 있어야 함
 ```
+
+`test_traffic.py` 가 함께 들어간 이유: 시뮬레이션이 교착으로 멈추면 어떤 복구 전략이
+나은지 **측정 자체가 불가능**해집니다. 교착은 성능 문제가 아니라 실험 타당성 문제입니다
+(docs/DECISIONS.md D-012).
 
 ---
 
@@ -92,9 +96,9 @@ grep -rn "compliance" sim/control/          # 결과가 비어 있어야 함
 
 ```
 sim/common/      geometry.py, ids.py, messages.py, lotmap.py, vehicle.py, maneuver.py
-sim/world/       lot_builder.py, physics.py, sensors.py, projector.py, simulation.py
-sim/control/     api.py, state.py, routing.py, cost.py, allocators/, recovery/
-sim/agents/      driver.py, vehicle.py, perception.py, driving.py
+sim/world/       lot_builder.py, physics.py, sensors.py, traffic.py, projector.py, simulation.py
+sim/control/     api.py, system.py, state.py, routing.py, cost.py, allocators/, recovery/
+sim/agents/      driver.py, perception.py, driving.py
 sim/scenarios/   *.yaml  (도착률, 성향 분포, 시드, 사용할 전략 이름)
 sim/metrics/     collector.py, trace_writer.py
 sim/experiments/ run_matrix.py, report.py

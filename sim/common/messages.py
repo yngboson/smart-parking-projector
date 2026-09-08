@@ -184,5 +184,11 @@ class Perception:
     pose_forward_clearance: float
     """앞차까지의 여유 거리 (m). 막혀 있지 않으면 큰 값."""
 
+    stop_distance: float = float("inf")
+    """멈춰야 하는 지점까지의 거리 (m). 교행 대기 등, 앞차가 아닌 이유로 서야 할 때.
+
+    월드가 차를 세우는 것이 아니라 운전자가 이 값을 보고 스스로 선다
+    (docs/DECISIONS.md D-012)."""
+
     visible_slots: tuple[VisibleSlot, ...] = ()
     guidance: GuidanceView | None = None

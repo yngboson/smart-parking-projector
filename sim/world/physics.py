@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import math
 
+from typing import Iterable, Sequence
+
 from sim.common.geometry import Pose, Vec2, wrap_angle
 from sim.common.vehicle import ControlInput, SelfState, VehicleSpec
 
@@ -96,11 +98,74 @@ def stopping_distance(spec: VehicleSpec, speed: float) -> float:
     return speed * speed / (2.0 * spec.max_decel)
 
 
-def gap_to(front: Vec2, behind: SelfState, spec: VehicleSpec) -> float:
-    """앞차까지의 세로 방향 여유 거리. 뒤에 있으면 큰 값을 준다."""
-    d = front - behind.pose.position
-    along = d.x * math.cos(behind.pose.theta) + d.y * math.sin(behind.pose.theta)
-    lateral = abs(-d.x * math.sin(behind.pose.theta) + d.y * math.cos(behind.pose.theta))
-    if along <= 0 or lateral > spec.width * 1.1:
-        return math.inf
-    return along - spec.length
+LANE_MARGIN = 0.35
+"""내 진행 통로의 좌우 여유(m). 이 안에 걸치는 물체만 나를 막는다."""
+
+MAX_LOOK = 22.0
+"""이 거리 너머는 보지 않는다(m). 주차장 통로 길이를 생각하면 충분하다."""
+
+STRAIGHT_STEER = 0.02
+"""이 조향각(rad) 아래는 직진으로 본다."""
+
+
+def forward_clearance(
+    behind: SelfState, spec: VehicleSpec, obstacles: Iterable[Sequence[Vec2]]
+) -> float:
+    """내 앞범퍼에서 앞차까지 남은 거리. 막힌 것이 없으면 무한대.
+
+    두 가지를 제대로 봐야 값이 쓸모 있다.
+
+    **앞차의 차체 꼭짓점 전부를 본다.** 중심점 하나만 보면 통로를 가로지르는 차를
+    놓친다 — 후진 주차 중인 차는 90° 를 도는 동안 중심이 옆으로 빠져 있어서
+    "앞에 아무도 없다"로 읽히고, 뒤차가 그대로 밀고 들어간다.
+
+    **지금 조향각이 만드는 원호를 따라 본다.** 직선으로만 재면 좌회전 중인 차가
+    회전 바깥쪽에 있는 차를 정면의 장애물로 오인한다. 실제로는 그 차를 스쳐 지나갈
+    뿐인데 급정거하고, 그 뒤로 통로 전체가 굳는다. 차는 직진하지 않는 순간에도
+    자기가 갈 곳을 알고 있다 — 그 곡률이 `SelfState.steer` 에 들어 있다.
+
+    이 함수는 **재기만 한다.** 이 값을 보고 속도를 줄이는 것은 운전자의 일이다
+    (`sim.agents.driver.Driver._speed_limit`). 월드가 차를 강제로 세우면
+    "앞차를 보고 멈추는 것"이 사람의 행동이 아니라 시뮬레이터의 기능이 되어버린다.
+    """
+    ct = math.cos(behind.pose.theta)
+    st = math.sin(behind.pose.theta)
+    ox, oy = behind.pose.position.x, behind.pose.position.y
+    half = spec.width / 2.0 + LANE_MARGIN
+    nose = spec.length - spec.rear_overhang
+
+    radius = (
+        None
+        if abs(behind.steer) < STRAIGHT_STEER
+        else spec.wheelbase / math.tan(behind.steer)
+    )
+
+    nearest = MAX_LOOK
+    for corners in obstacles:
+        for c in corners:
+            dx, dy = c.x - ox, c.y - oy
+            u = dx * ct + dy * st            # 진행 방향
+            w = -dx * st + dy * ct           # 왼쪽이 양수
+            d = _path_distance(u, w, radius, half)
+            if d is not None and d < nearest:
+                nearest = d
+
+    return math.inf if nearest >= MAX_LOOK else nearest - nose
+
+
+def _path_distance(u: float, w: float, radius: float | None, half: float) -> float | None:
+    """내 진행 궤적을 따라 그 점까지 가는 거리. 궤적 폭을 벗어나면 None."""
+    if radius is None:
+        if u <= 0.0 or abs(w) > half:
+            return None
+        return u
+
+    # 회전 중심은 차의 왼쪽(좌회전) 또는 오른쪽(우회전)으로 radius 만큼.
+    reach = math.hypot(u, w - radius)
+    if abs(reach - abs(radius)) > half:
+        return None
+
+    phi = math.atan2(u, radius - w) if radius > 0 else math.atan2(u, w - radius)
+    # atan2 로 얻은 각을 진행 방향 기준 [0, 2pi) 로 편다.
+    turned = phi % (2.0 * math.pi)
+    return abs(radius) * turned
