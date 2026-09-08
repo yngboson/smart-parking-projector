@@ -1,4 +1,4 @@
-# 인수인계 (2026-09-09 갱신 · 4단계까지)
+# 인수인계 (2026-09-09 갱신 · 5단계까지)
 
 > **다음 세션은 이 문서 → `CLAUDE.md` → `docs/DECISIONS.md` 순서로 읽으면 됩니다.**
 > `docs/PLAN.md` 는 전체 로드맵이고, 이 문서는 "지금 어디까지 왔고 다음에 뭘 하나"입니다.
@@ -15,7 +15,8 @@
 그래서 **관제 알고리즘은 운전자의 성향(`compliance`)을 절대 볼 수 없게** 코드를
 물리적으로 분리했고, 그 경계를 테스트로 강제합니다. 이게 무너지면 연구가 무의미해집니다.
 
-**0~4단계 완료. 브라우저에서 실시간으로 돌아갑니다. 다음은 5단계(강탈 시나리오).**
+**0~5단계 완료. 강탈이 실제로 일어나고 관제가 센서만으로 인지합니다.
+다음은 6단계(복구 전략 6종) — 이 연구의 결론이 나오는 단계입니다.**
 
 ---
 
@@ -34,11 +35,15 @@ start-windows.bat
 파이썬 확인 → venv → 의존성 → 도면 생성 → 서버 → 브라우저까지 자동입니다.
 
 ```bash
-pytest tests/ -v                                        # 100개 통과해야 정상 (약 90초)
+pytest tests/ -v                                        # 116개 통과해야 정상 (약 4분 30초)
 uvicorn server.app:app --reload                         # 브라우저 → localhost:8000
 python -m sim.world.simulation --duration 300 --arrival-rate 0.15    # 헤드리스
 python -m sim.metrics.trace_writer --duration 240 --out runs/demo    # 녹화
 ```
+
+라이브 뷰어에서 **시나리오**(light/busy/rush_hour)와 **비협조 운전자 비율**을
+그 자리에서 바꿀 수 있습니다. 비율을 0 으로 두면 강탈이 사라지는 것이 보입니다 —
+발표에서 문제의 원인을 보여주는 장면입니다.
 
 브라우저를 열면 **Python 시뮬레이션이 실시간으로 보낸 프레임**이 그대로 보입니다.
 서버가 없으면 뷰어가 알아서 `runs/demo` 녹화본으로 넘어갑니다 (D-005).
@@ -56,9 +61,10 @@ python -m sim.metrics.trace_writer --duration 240 --out runs/demo    # 녹화
 | 1 | 공용 값 타입, 도면 생성기, **계층 경계 테스트** | ✅ |
 | 2 | 자전거 모델, Pure Pursuit, 후진 주차 | ✅ |
 | 3 | 관제 알고리즘 + 센서 + 프로젝터 + 계층 배선 | ✅ |
-| 4 | **뷰어 연동 — WebSocket 라이브 + 녹화본 재생** | ✅ |
-| 5 | **강탈 시나리오 — 다음 작업** | ⬜ |
-| 6~10 | 복구 6종, 베이스라인, 실험, STL, 발표 마감 | ⬜ |
+| 4 | 뷰어 연동 — WebSocket 라이브 + 녹화본 재생 | ✅ |
+| 5 | **차량 성향 · 이탈 판단 · 강탈 감지 · 시나리오** | ✅ |
+| 6 | **복구 전략 6종 — 다음 작업** | ⬜ |
+| 7~10 | 베이스라인, 실험 하네스, STL, 발표 마감 | ⬜ |
 
 ### 3단계 실측 (시드 6개 × 1200초, 도착률 0.15/초)
 
@@ -72,8 +78,21 @@ python -m sim.metrics.trace_writer --duration 240 --out runs/demo    # 녹화
 
 ```
 녹화본 크기    240초 / 초당 3.3프레임 → 1.6 MB   (좌표 cm 반올림 + 폴리라인 델타)
-라이브 스트림  초당 10프레임, 배속 0.5~8×, 일시정지·도착률 변경 지원
+라이브 스트림  초당 10프레임, 배속 0.5~8×, 일시정지·시나리오/도착률/성향 변경
 ```
+
+### 5단계 실측 (900초 · 시드 0 · 비협조 35%)
+
+| 시나리오 | 최대 점유율 | 주차 | 이탈 | 강탈 | 재탐색 |
+|---|---|---|---|---|---|
+| `light` | 25.8% | 120 | 36 | 5 | 5 |
+| `busy` | 64.2% | 103 | 33 | 4 | 3 |
+| `rush_hour` | 93.3% | 104 | 28 | **13** | 13 |
+| `rush_hour` · 전원 협조 **(대조군)** | 90.8% | 89 | 0 | **0** | 0 |
+
+마지막 줄이 이 표에서 가장 중요합니다. 같은 혼잡도에서 아무도 배신하지 않으면
+강탈이 **0 건**입니다 — 측정에 바닥 노이즈가 없다는 뜻이고, 그래야 강탈 횟수를
+지표로 쓸 수 있습니다. 여기까지 오는 데 센서를 두 번 고쳤습니다 (D-015).
 
 **교착 없음.** 3단계에서 차간거리를 배선하자 시뮬레이션이 통째로 굳었고, 원인을 찾는 데
 네 번의 시도가 필요했습니다. 전말은 `docs/DECISIONS.md` D-012 와 `sim/world/traffic.py`
@@ -96,6 +115,7 @@ sim/world/       주차장 환경 — 계층 배선을 담당하는 유일한 �
   lot_builder.py 격자 도면 생성기 (좌표 하드코딩 없음)
   physics.py     자전거 모델 적분 + `forward_clearance()` (조향각 원호를 따라 잼)
   sensors.py     ANPR · 슬롯 점유 센서 · 통로 검지기 + 공용 격자 색인
+                 점유 판정에 확인 시간·정렬각·이력현상이 들어 있다 (D-015)
   traffic.py     통로 합류 양보 (D-012). 교착 조사 전말이 모듈 주석에 있음
   projector.py   유도선 상태 + 진행률(지나온 구간 소거)
   simulation.py  ★ 계층 배선. 고정 timestep 루프. `python -m` 으로 실행 가능
@@ -114,8 +134,12 @@ sim/control/     관제 — sim.common 외에는 아무것도 import 하지 않�
 
 sim/agents/      차량 — sim.common 외에는 아무것도 import 하지 않음
   driving.py     Pure Pursuit + 종방향 제어 (운전 기술)
-  driver.py      ★ DriverProfile(compliance) 와 주행 상태 기계. 우측통행·비집고나가기
+  driver.py      ★ DriverProfile(compliance·walk_preference) 와 주행 상태 기계
+                 이탈 판단이 여기 있다 — 이 연구의 돌발 상황 그 자체
   perception.py  운전자 시야 규칙 (반경·시야각·통로 접면)
+
+sim/scenarios/   실험 조건을 데이터로 (light / busy / rush_hour)
+  loader.py      YAML → Scenario. 오타는 조용히 넘기지 않고 바로 실패시킨다
 
 sim/metrics/
   trace_writer.py  프레임을 runs/<run_id>/trace.jsonl 로 녹화 (발표장의 보험)
@@ -129,6 +153,7 @@ viewer/js/       three.js 뷰어 (빌드 스텝 없음)
 tests/
   test_layer_isolation.py  ★ 이 저장소에서 가장 중요한 테스트
   test_traffic.py          ★ 두 번째로 중요 — 교착이 없는가
+  test_defection.py        ★ 이탈이 일어나는가 / 협조만 있으면 강탈이 0 인가
   test_routing.py, test_control.py, test_simulation.py, test_stream.py
   test_lotmap.py, test_driving.py
 ```
@@ -153,45 +178,60 @@ tests/
 
 ---
 
-## 다음 작업 — 5단계 (강탈 시나리오)
+## 다음 작업 — 6단계 (복구 전략 6종)
 
-**이 프로젝트가 답하려던 질문이 드디어 시작되는 단계입니다.** 지금까지는 전원이
-안내를 따르는 세계였습니다. 이제 일부가 배신합니다.
+**이 연구의 결론이 나오는 단계입니다.** 강탈은 이제 실제로 일어납니다. 남은 질문은
+하나입니다 — **빼앗긴 사람을 어떻게 구제하는 것이 가장 매끄러운가.**
 
-배관은 이미 다 깔려 있습니다. 관제가 센서만으로 강탈을 알아채는 경로는 완성됐고
-`tests/test_control.py` 가 검증합니다. 남은 것은 **차가 실제로 이탈하게 만드는 것**뿐입니다.
+지금은 피해 차량을 그냥 `greedy_nearest` 에 다시 넣습니다. 사실상 `local_reassign`
+이며, `sim/control/system.py` 의 `_note_reasons` / `_assign` 이 그 자리입니다.
+**기본값은 `global_rematch` 여야 합니다** (D-009).
 
 ### 만들 것
 
 | 파일 | 내용 |
 |---|---|
-| `sim/agents/driver.py` | 이탈 판단 — 눈에 보이는 빈 자리가 더 좋으면 `compliance` 확률로 그리로 간다 |
-| `sim/world/simulation.py` | `vision_enabled=True` 로 켜고, 성향 분포를 시나리오에서 받는다 |
-| `sim/scenarios/*.yaml` | 도착률·성향 분포·시드·전략 이름 |
+| `sim/control/recovery/api.py` | `RecoveryStrategy` 프로토콜 + 레지스트리 (allocators 와 같은 모양) |
+| `sim/control/recovery/local_reassign.py` | R1 — 피해 차량에게만 최근접 빈 자리 |
+| `sim/control/recovery/global_rematch.py` | **R2 기본값** — 미주차 차량 × 빈 자리 헝가리안 재매칭 |
+| `sim/control/recovery/chain_shift.py` | R3 — 최소비용 증가경로로 예약 연쇄 이양 |
+| `sim/control/recovery/reserve_pool.py` | R4 — k% 를 예비로 남겨 즉시 투입 |
+| `sim/control/recovery/reputation_aware.py` | R5 — 관측된 이탈 이력으로 신뢰도 추정 |
+| `sim/control/recovery/fairness_weighted.py` | R6 — 누적 재탐색이 많은 차량에 우선권 |
 
 ### 이미 준비된 것 (다시 만들지 마세요)
 
-- `DriverProfile.compliance` — 자리는 잡혀 있고 현재 전원 1.0 입니다
-- `SimConfig.vision_enabled` — 켜면 `Perception.visible_slots` 가 채워집니다.
-  배선은 끝나 있고 기본값만 꺼져 있습니다
-- `agents/perception.py` 의 `VisionModel` — 반경 25m · 시야각 · 통로 접면 규칙
-- `VisibleSlot.looks_free` — **예약 여부는 들어 있지 않습니다.** 운전자 눈에는
-  예약된 자리도 그냥 빈 자리로 보입니다. 강탈이 일어나는 근본 이유이므로
-  여기에 예약 정보를 넣지 마세요
-- 관제 쪽 전 경로: `SlotStolen` 판정 → `GuidanceReason.REROUTE` → `reroute_count`
-  → 프레임 `events` → 뷰어 이벤트 로그. 강탈이 발생하면 화면에 바로 뜹니다
+- `scipy.optimize.linear_sum_assignment` — 헝가리안. `pyproject.toml` 에 이미 있습니다
+- `ControlState.log` — 번호판별 `deviations` / `steals` / `victim_count` 와
+  `trust(plate)`. **R5 가 쓸 재료가 이미 쌓이고 있습니다** (D-003)
+- `VehicleBelief.reroute_count` / `reshuffle_count` — R6 의 우선권 근거
+- `AllocationContext` — 후보 주차면·경로·비용·신뢰도를 한 번에 준다. 복구 전략도
+  같은 도구를 쓰면 됩니다
+- `GuidanceReason.RESHUFFLE` — 남의 강탈을 흡수하느라 목적지가 바뀐 차량용.
+  `reroute_count` 와 **따로 셉니다**. 섞으면 "피해자 수"와 "영향받은 차량 수"가
+  구분되지 않아 전략 비교가 무의미해집니다
+- `sim/scenarios/*.yaml` 의 `control.recovery` — 이름으로 고르게 되어 있습니다
 
-### 이탈 판단 (docs/PLAN.md 7)
+### 비교 방법
 
-발견한 빈 슬롯이 (a) 목적지보다 남은 주행거리를 D 이상 줄이고 (b) 도보거리도
-나쁘지 않으면 → `compliance` 에 따른 확률로 이탈해 그 자리를 차지합니다.
+같은 시나리오 · 같은 시드로 전략만 바꿔 돌립니다. 시뮬레이션은 재현 가능합니다
+(`test_defection.py::test_defection_is_reproducible`).
 
-> ⚠️ **먼저 미해결 이슈 2번(센서 오탐)을 0 으로 만드세요.** 강탈 횟수가 이 연구의
-> 핵심 지표인데 바닥 노이즈가 0.2% 섞여 있으면 결과를 방어하기 어렵습니다.
+```bash
+# 8단계에서 만들 하네스가 이 일을 자동화합니다
+python -m sim.experiments.run_matrix --scenario sim/scenarios/rush_hour.yaml --seeds 10
+```
+
+비교 지표: 평균/p95 주차 소요시간, 총 우회거리, 재탐색 횟수, 연쇄 재배치 대수,
+그리고 **교착 발생 빈도** — "전체 재최적화가 교착을 더 많이 만든다" 같은 결과가
+나오면 발표에서 강한 소재입니다.
 
 ---
 
 ## 미해결 이슈 3개 ⚠️
+
+> 4단계까지 남아 있던 '센서 오탐 0.2%' 는 해결됐습니다 — 만차 근처 전원 협조 조건에서
+> 강탈 **0 건**입니다 (D-015). 강탈 횟수를 지표로 써도 됩니다.
 
 ### 1. `greedy_nearest` 가 모든 차를 한 구석으로 몰아넣습니다
 
@@ -206,34 +246,20 @@ tests/
 `hungarian_batch` / `zone_late_binding` 이 개선해야 할 지점이고, 비교 실험의 재료입니다.
 고치려 하지 말고 **다른 전략을 추가**하세요 (`CLAUDE.md` 의 '전략을 추가하는 방법').
 
-### 2. 슬롯 점유 센서 오탐이 0.2% 남아 있습니다
+### 2. 복구가 아직 `greedy_nearest` 재투입입니다
 
-**증상**: 주차면에서 빠져나가던 차가 드물게 옆칸 센서를 울립니다. 그 칸이 다른
-차에게 예약돼 있으면 관제가 **있지도 않은 강탈**을 보고합니다.
+피해 차량을 그냥 할당 전략에 다시 넣고 있어, 사실상 `local_reassign` 으로 동작합니다.
+**기본값은 `global_rematch` 여야 합니다** (D-009). 6단계의 본체입니다.
 
-**현재 방어**: 속도 0.2 m/s 미만 + 주차면 방향과 25° 이내 정렬 + 길이 방향 ±1.2m +
-횡방향 ±0.7m 를 모두 만족해야 점유로 판정합니다 (`sim/world/sensors.py`).
-6시드 × 1200초에서 548건 중 1건까지 줄였습니다.
+### 3. `RouteDeviation` 을 관제가 활용하지 않습니다
 
-**왜 중요한가**: 강탈 횟수가 이 연구의 **핵심 지표**입니다. 5단계에서 진짜 강탈을
-주입하기 전에 이 바닥 노이즈를 0 으로 만들어 두는 편이 좋습니다.
-재현: `SimConfig(seed=4, arrival_rate=0.15)` 로 1200초.
+통로 검지기가 이탈을 **강탈보다 먼저** 잡아냅니다 (`sim/control/state.py`).
+지금은 기록만 하고 아무 대응도 하지 않습니다.
 
-**다음 수**: 시간 디바운스(같은 판정이 0.5초 이상 지속돼야 이벤트 발행)를 넣으면
-기하 조건만으로 남은 경계 사례를 흡수할 수 있습니다.
-
-### 3. `compliance` 는 아직 아무도 쓰지 않습니다 — 5단계의 본체
-
-`DriverProfile.compliance` 필드는 `sim/agents/driver.py` 에 자리를 잡아 두었지만
-**현재 전원 협조(1.0)** 입니다. 3단계는 관제가 정상 동작하는지부터 확인해야 했으니까요.
-
-5단계에서 붙일 것:
-- `SimConfig.vision_enabled = True` — 이미 배선돼 있습니다. 켜면 운전자가
-  `Perception.visible_slots` 로 육안 관측을 받습니다 (`agents/perception.py` 의 시야 규칙).
-- `Driver` 의 이탈 판단 — 발견한 빈 자리가 (a) 남은 주행거리를 D 이상 줄이고
-  (b) 도보거리도 나쁘지 않으면, `compliance` 에 따른 확률로 이탈해 그 자리를 차지.
-- 강탈이 발생하면 관제는 **센서로만** 알아챕니다. 그 경로는 이미 완성돼 있고
-  `tests/test_control.py` 가 검증합니다.
+이건 기회입니다 — 강탈이 확정되기 전에 선제 대응하는 전략을 만들 수 있고,
+"사후 복구 vs 조기 경보" 비교는 발표에서 좋은 이야깃거리입니다. 다만 조기 경보는
+오경보를 낳으므로(정상 주행 중에도 검지기 순서가 어긋날 수 있음) 그 대가를 함께
+측정해야 합니다.
 
 ---
 

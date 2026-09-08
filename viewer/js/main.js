@@ -513,20 +513,76 @@ function wireControls(stage, world) {
     });
   }
 
-  // 도착률은 라이브에서만 의미가 있다 — 녹화본은 이미 벌어진 일이다
+  wireScenario(world);
+}
+
+/**
+ * 시나리오와 조건 슬라이더.
+ *
+ * 라이브에서만 의미가 있다 — 녹화본은 이미 벌어진 일이라 조건을 바꿀 수 없다.
+ * 조건을 바꾸면 시뮬레이션이 처음부터 다시 돈다. 발표에서 "비협조 비율을 0 으로
+ * 두면 이런 일이 안 일어납니다" 를 그 자리에서 보여주기 위한 장치다.
+ */
+async function wireScenario(world) {
+  const live = world.source?.live === true;
+  const select = $("sel-scenario");
   const arrival = $("r-arrival");
-  if (arrival) {
-    const live = world.source?.live === true;
-    arrival.disabled = !live;
-    const show = () => {
-      $("v-arrival").textContent = `${(Number(arrival.value) / 10).toFixed(1)}대/분`;
-    };
-    arrival.addEventListener("input", show);
-    arrival.addEventListener("change", () => {
-      world.source?.reset?.({ arrival_rate: Number(arrival.value) / 600 });
-    });
-    show();
+  const defect = $("r-defect");
+  const note = $("scenario-note");
+
+  for (const el of [select, arrival, defect]) if (el) el.disabled = !live;
+
+  const showArrival = () =>
+    ($("v-arrival").textContent = `${(Number(arrival.value) / 10).toFixed(1)}대/분`);
+  const showDefect = () =>
+    ($("v-defect").textContent = `${defect.value}%`);
+
+  arrival?.addEventListener("input", showArrival);
+  defect?.addEventListener("input", showDefect);
+  arrival?.addEventListener("change", () =>
+    world.source?.reset?.({ arrival_rate: Number(arrival.value) / 1000 })
+  );
+  defect?.addEventListener("change", () =>
+    world.source?.reset?.({ noncompliant_share: Number(defect.value) / 100 })
+  );
+
+  if (!live) {
+    if (note) note.textContent = "녹화본을 재생 중입니다. 조건은 바꿀 수 없습니다.";
+    showArrival();
+    showDefect();
+    return;
   }
+
+  let body;
+  try {
+    body = await fetch("/api/scenarios").then((r) => r.json());
+  } catch {
+    return;
+  }
+
+  const current = world.source?.hello?.scenario ?? body.default;
+  const byName = new Map(body.scenarios.map((s) => [s.name, s]));
+
+  select.innerHTML = body.scenarios
+    .map((s) => `<option value="${s.name}">${s.name}</option>`)
+    .join("");
+  select.value = current;
+
+  const sync = (name) => {
+    const s = byName.get(name);
+    if (!s) return;
+    if (note) note.textContent = s.description;
+    arrival.value = String(Math.round(s.arrival_rate * 1000));
+    defect.value = String(Math.round(s.noncompliant_share * 100));
+    showArrival();
+    showDefect();
+  };
+
+  select.addEventListener("change", () => {
+    world.source?.send?.({ cmd: "scenario", name: select.value });
+    sync(select.value);
+  });
+  sync(current);
 }
 
 function hash(str) {

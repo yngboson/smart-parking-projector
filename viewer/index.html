@@ -78,6 +78,10 @@
     font: inherit; font-size: 12px;
   }
   button.wide[aria-pressed="true"] { background: #2b3446; }
+  select {
+    width: 100%; padding: 6px 8px; border-radius: 7px; font: inherit; font-size: 12px;
+    background: #1c2230; color: var(--text); border: 1px solid #2b3446;
+  }
   .note { margin: 5px 0 0; font-size: 10.5px; color: var(--muted); line-height: 1.5; }
 
   /* ── 우상단: 컨트롤 ── */
@@ -255,9 +259,21 @@
     </div>
 
     <div class="field">
+      <label>시나리오</label>
+      <select id="sel-scenario"></select>
+      <p class="note" id="scenario-note"></p>
+    </div>
+
+    <div class="field">
       <label>도착률 <span id="v-arrival" style="color:var(--text)"></span></label>
-      <input type="range" id="r-arrival" min="10" max="200" step="10" value="90" />
-      <p class="note">바꾸면 라이브 시뮬레이션이 처음부터 다시 시작합니다. 녹화본에서는 잠깁니다.</p>
+      <input type="range" id="r-arrival" min="10" max="250" step="10" value="120" />
+    </div>
+
+    <div class="field">
+      <label>비협조 운전자 <span id="v-defect" style="color:var(--text)"></span></label>
+      <input type="range" id="r-defect" min="0" max="100" step="5" value="35" />
+      <p class="note">안내를 무시하고 눈에 띄는 좋은 자리를 차지하는 비율입니다.
+        바꾸면 라이브 시뮬레이션이 처음부터 다시 시작합니다 — 녹화본에서는 잠깁니다.</p>
     </div>
   </section>
 

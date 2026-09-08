@@ -63,6 +63,25 @@ OCCUPANCY_LONGITUDINAL = 1.20
 두면 주차면 입구에 걸쳐 있는 차 — 이제 막 빠져나가는 차 — 까지 점유로 잡힌다.
 """
 
+HOLD_MARGIN = 1.00
+"""점유를 **유지**할 때 쓰는 주차면 여유(m). 시작 판정보다 훨씬 넉넉하다.
+
+이력현상(hysteresis)이 필요한 이유: 좁은 조건 하나로 시작과 해제를 모두 판정하면,
+빠져나가려고 1m 전진한 차가 있는데도 센서가 자리를 비웠다고 보고한다. 관제는 그
+자리를 다른 차에게 주고, 아직 그 자리에 있는 차가 다시 감지되는 순간 **자기 자리를
+자기가 강탈한** 꼴이 된다. 실제로 그 오탐이 났다.
+
+들어오는 판정은 까다롭게, 나가는 판정은 관대하게 — 실제 검지기의 동작이기도 하다.
+"""
+
+OCCUPANCY_DEBOUNCE = 0.60
+"""같은 판정이 이만큼 이어져야 점유로 발행한다(초).
+
+기하 조건만으로는 경계 사례가 남는다 — 빠져나가던 차가 잠깐 옆칸 안쪽을 스치면
+관제가 **있지도 않은 강탈**을 보고한다. 강탈 횟수가 이 연구의 핵심 지표이므로
+바닥 노이즈는 0 이어야 한다. 실제 초음파/지자기 센서도 같은 이유로 확인 시간을 둔다.
+"""
+
 OCCUPANCY_ALIGN = 0.44
 """주차면 방향과 이 정도(rad, 약 25°) 안으로 정렬돼야 주차로 본다.
 
@@ -106,6 +125,7 @@ class SensorSuite:
 
         self._present: dict[PlateId, VehicleClass] = {}
         self._occupancy: dict[SlotId, PlateId | None] = {}
+        self._candidate: dict[SlotId, tuple[PlateId, float]] = {}
         self._last_node: dict[PlateId, NodeId] = {}
 
     # ── 관측 ──────────────────────────────────────────────────────
@@ -117,6 +137,36 @@ class SensorSuite:
         events.extend(self._slot_sensors(t, vehicles))
         events.extend(self._lane_detectors(t, vehicles))
         events.extend(self._gate_exits(t, vehicles))
+        return events
+
+    def prime(self, t: float, vehicles: Sequence[VehicleView]) -> list[SensorEvent]:
+        """시작 상태를 확인 시간 없이 곧바로 관측으로 만든다.
+
+        이미 주차돼 있는 차들은 방금 들어온 것이 아니라 **오래전부터 그 자리에**
+        있었다. 확인 시간(`OCCUPANCY_DEBOUNCE`)을 기다리는 동안 관제가 그 자리를
+        새로 도착한 차에게 배정하면, 있지도 않은 강탈이 보고된다 — 실제로 그랬다.
+
+        시뮬레이션 시작 시 한 번만 부른다.
+        """
+        events: list[SensorEvent] = list(self._gate_entries(t, vehicles))
+        settled_at = t - OCCUPANCY_DEBOUNCE - 1.0
+
+        for v in vehicles:
+            if v.state.speed > SETTLED_SPEED:
+                continue
+            sid = self._slot_under(v)
+            if sid is None:
+                continue
+            self._candidate[sid] = (v.plate, settled_at)
+            self._occupancy[sid] = v.plate
+            events.append(
+                SlotOccupancyChanged(
+                    t=t,
+                    slot_id=sid,
+                    occupied=True,
+                    plate=v.plate if self.slot_sensor_mode == "anpr" else None,
+                )
+            )
         return events
 
     # ── 입구/출구 ANPR ─────────────────────────────────────────────
@@ -141,27 +191,46 @@ class SensorSuite:
     # ── 주차면 점유 센서 ───────────────────────────────────────────
 
     def _slot_sensors(self, t: float, vehicles: Sequence[VehicleView]) -> list[SensorEvent]:
-        current: dict[SlotId, PlateId] = {}
+        settled: dict[SlotId, PlateId] = {}     # 반듯이 선 차 — 점유 **시작** 판정
+        present: dict[SlotId, set[PlateId]] = {}  # 영역 안의 차 — 점유 **유지** 판정
+
         for v in vehicles:
-            if v.state.speed > SETTLED_SPEED:
-                continue
-            sid = self._slot_under(v)
-            if sid is not None:
-                current[sid] = v.plate
+            area = self._slot_area(v)
+            if area is not None:
+                present.setdefault(area, set()).add(v.plate)
+            if v.state.speed <= SETTLED_SPEED:
+                sid = self._slot_under(v)
+                if sid is not None:
+                    settled[sid] = v.plate
 
         out: list[SensorEvent] = []
-        for sid, plate in current.items():
-            if self._occupancy.get(sid) != plate:
-                self._occupancy[sid] = plate
-                out.append(
-                    SlotOccupancyChanged(
-                        t=t,
-                        slot_id=sid,
-                        occupied=True,
-                        plate=plate if self.slot_sensor_mode == "anpr" else None,
-                    )
+
+        # 점유는 확인 시간을 둔다. 스쳐 지나간 차를 주차로 오인하면 관제가
+        # 없던 강탈을 보고한다.
+        for sid, plate in settled.items():
+            since = self._candidate.get(sid)
+            if since is None or since[0] != plate:
+                self._candidate[sid] = (plate, t)
+                continue
+            if t - since[1] < OCCUPANCY_DEBOUNCE or self._occupancy.get(sid) == plate:
+                continue
+            self._occupancy[sid] = plate
+            out.append(
+                SlotOccupancyChanged(
+                    t=t,
+                    slot_id=sid,
+                    occupied=True,
+                    plate=plate if self.slot_sensor_mode == "anpr" else None,
                 )
-        for sid in [s for s, p in self._occupancy.items() if p is not None and s not in current]:
+            )
+
+        for sid in [s for s in self._candidate if s not in settled]:
+            del self._candidate[sid]
+
+        # 해제는 그 차가 주차면 영역을 **완전히 벗어났을 때**만.
+        for sid, plate in list(self._occupancy.items()):
+            if plate is None or plate in present.get(sid, ()):
+                continue
             self._occupancy[sid] = None
             out.append(SlotOccupancyChanged(t=t, slot_id=sid, occupied=False, plate=None))
         return out
@@ -180,6 +249,22 @@ class SensorSuite:
             if inside_rect(
                 center, slot.center, slot.heading,
                 OCCUPANCY_LONGITUDINAL * 2.0, OCCUPANCY_LATERAL * 2.0,
+            ):
+                return sid
+        return None
+
+    def _slot_area(self, v: VehicleView) -> SlotId | None:
+        """차체 중심이 어느 주차면 **영역** 안에 있는가. 자세는 보지 않는다.
+
+        점유를 유지할지 판단하는 넉넉한 상자다. 빠져나가는 중이라 비뚤어져 있어도
+        아직 그 자리를 쓰고 있는 것은 사실이다.
+        """
+        center = body_center(v.state.pose, v.spec)
+        for sid in cells_around(self._slot_grid, center):
+            slot = self.lot.slots[sid]
+            if inside_rect(
+                center, slot.center, slot.heading,
+                slot.length + HOLD_MARGIN, slot.width + HOLD_MARGIN,
             ):
                 return sid
         return None

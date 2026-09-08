@@ -27,6 +27,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from sim.common.lotmap import LotMap
+from sim.scenarios.loader import available, load_named
 from sim.world.simulation import SimConfig, Simulation
 
 REPO = Path(__file__).resolve().parents[1]
@@ -35,6 +36,13 @@ LAYOUTS = REPO / "layouts"
 RUNS = REPO / "runs"
 
 DEFAULT_LAYOUT = "mid_grid_120"
+
+DEFAULT_SCENARIO = "busy"
+"""라이브 데모가 기본으로 트는 시나리오.
+
+빈 주차장으로 시작하면 아무도 남의 자리를 건드릴 이유가 없어 **이 연구의 질문이
+화면에 나타나지 않는다.** 절반쯤 찬 주차장에서 시작해야 강탈이 보인다.
+"""
 
 MAX_SPEED = 8.0
 """배속 상한. 이보다 빠르면 파이썬이 물리를 못 따라가 화면이 끊긴다."""
@@ -89,6 +97,24 @@ def list_traces() -> JSONResponse:
     return JSONResponse({"traces": traces})
 
 
+@app.get("/api/scenarios")
+def list_scenarios() -> JSONResponse:
+    """실험 시나리오 목록. 발표 중에 조건을 갈아 끼울 때 쓴다."""
+    out = []
+    for name in available():
+        s = load_named(name)
+        out.append(
+            {
+                "name": s.name,
+                "description": " ".join(s.description.split()),
+                "arrival_rate": s.config.arrival_rate,
+                "prefill": s.config.prefill,
+                "noncompliant_share": s.config.noncompliant_share,
+            }
+        )
+    return JSONResponse({"scenarios": out, "default": DEFAULT_SCENARIO})
+
+
 @app.get("/api/models")
 def get_models() -> JSONResponse:
     """차량 3D 모델 설정. STL 이 없으면 뷰어가 저폴리 박스로 폴백한다."""
@@ -104,10 +130,11 @@ def get_models() -> JSONResponse:
 class LiveSession:
     """WebSocket 연결 하나에 딸린 시뮬레이션."""
 
-    def __init__(self, layout: str = DEFAULT_LAYOUT) -> None:
+    def __init__(self, layout: str = DEFAULT_LAYOUT, scenario: str = DEFAULT_SCENARIO) -> None:
         self.lot = load_lot(layout)
         self.layout = layout
-        self.config = SimConfig()
+        self.scenario = scenario
+        self.config = _scenario_config(scenario)
         self.sim = Simulation(self.lot, config=self.config)
         self.speed = 1.0
         self.paused = False
@@ -130,8 +157,15 @@ class LiveSession:
             self.reset(
                 seed=_maybe_int(msg.get("seed")),
                 arrival_rate=_maybe_float(msg.get("arrival_rate")),
+                noncompliant_share=_maybe_float(msg.get("noncompliant_share")),
+                prefill=_maybe_float(msg.get("prefill")),
                 max_guided=_maybe_int(msg.get("max_guided")),
             )
+        elif cmd == "scenario":
+            name = str(msg.get("name", DEFAULT_SCENARIO))
+            self.scenario = name
+            self.config = _scenario_config(name)
+            self.sim = Simulation(self.lot, config=self.config)
 
     @property
     def hello(self) -> dict:
@@ -139,6 +173,7 @@ class LiveSession:
             "type": "hello",
             "live": True,
             "layout": self.layout,
+            "scenario": self.scenario,
             "dt": self.config.dt,
             "config": asdict(self.config),
         }
@@ -186,6 +221,14 @@ async def _read_commands(ws: WebSocket, inbox: asyncio.Queue) -> None:
             await inbox.put(await ws.receive_json())
     except Exception:
         return
+
+
+def _scenario_config(name: str) -> SimConfig:
+    """시나리오 파일에서 설정을 읽는다. 없는 이름이면 기본값으로 돈다."""
+    try:
+        return load_named(name).config
+    except FileNotFoundError:
+        return SimConfig()
 
 
 def _maybe_int(v) -> int | None:

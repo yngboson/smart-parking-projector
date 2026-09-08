@@ -30,7 +30,7 @@ from sim.agents.driver import Driver, DriverPhase, DriverProfile
 from sim.agents.driving import DrivingSkill
 from sim.agents.perception import VisionModel
 from sim.common.geometry import Vec2
-from sim.common.ids import PlateId, SlotId, SlotStatus, VehicleClass
+from sim.common.ids import PlateId, SlotId, SlotStatus, SlotType, VehicleClass
 from sim.common.lotmap import LotMap
 from sim.common.messages import (
     Perception,
@@ -86,17 +86,40 @@ class SimConfig:
     여기서 제한하면 안 된다 — 주차한 차까지 세면 주차장이 인위적으로 막힌다.
     """
 
+    prefill: float = 0.0
+    """시작할 때 미리 차 있는 주차면의 비율 (0~1).
+
+    **강탈은 빈 자리가 흔할 때 일어나지 않는다.** 텅 빈 주차장에서는 비협조
+    운전자도 남의 자리를 건드릴 이유가 없어 그냥 아무 빈자리나 차지한다.
+    자리가 귀해져야 "남에게 배정된 자리"를 노리게 된다 — 주말 대형마트가 그렇다.
+
+    건물에 가까운 자리부터 채운다. 실제 주차장이 그렇고, 그래야 늦게 온 차량이
+    받는 자리와 눈에 보이는 좋은 자리의 격차가 생긴다.
+    """
+
     entry_clearance: float = 9.0
     """입구에 이 거리 안에 차가 있으면 다음 차를 들여보내지 않는다(m)."""
 
     slot_sensor_mode: str = "anpr"
     """"anpr" = 주차면 센서가 번호판까지 읽음, "presence" = 점유 여부만 (D-002)."""
 
-    vision_enabled: bool = False
-    """운전자에게 육안으로 보이는 주차면을 넘겨줄 것인가.
+    noncompliant_share: float = 0.0
+    """비협조 성향을 가진 운전자의 비율 (0~1).
 
-    3단계에서는 꺼 둔다 — 아직 아무도 이탈하지 않으므로 계산만 낭비다.
-    5단계(강탈 시나리오)에서 켠다.
+    **이 연구의 독립변수다.** 0 이면 전원이 안내를 따르고 강탈이 일어나지 않는다.
+    올릴수록 관제가 복구해야 할 상황이 잦아진다. 관제는 이 값도, 개별 차량의
+    성향도 볼 수 없다 (docs/DECISIONS.md D-001).
+    """
+
+    compliance_low: float = 0.30
+    compliance_high: float = 0.75
+    """비협조 운전자의 compliance 범위. 유혹 한 번을 참아낼 확률이다."""
+
+    vision_enabled: bool = False
+    """협조적인 운전자에게도 육안 관측을 넘길 것인가.
+
+    평소에는 필요 없다 — 유도선만 보고 가는 사람에게 빈자리 목록을 계산해 주는 것은
+    낭비다. 무안내 베이스라인(D-010)에서는 **모두가** 눈으로 찾아야 하므로 켠다.
     """
 
 
@@ -179,6 +202,12 @@ class Simulation:
         self._park_times: list[float] = []
         self._sent_revision: dict[PlateId, int] = {}
         self._sent_status: dict[SlotId, str] = {}
+        self._prefill()
+
+        # 시작부터 차 있는 자리는 관제도 처음부터 알아야 한다. 모르는 채로 배정하면
+        # 첫 몇 초 동안 있지도 않은 강탈이 쏟아진다.
+        if self.vehicles:
+            self.control.on_events(self.sensors.prime(0.0, self.vehicles))
         self._pending: list = []
         """아직 발행하지 않은 추론 사건들. 프레임을 솎아내도 잃지 않는다."""
 
@@ -258,13 +287,21 @@ class Simulation:
         '비었는가'는 월드만이 아는 사실을 채운다. 다만 **예약 여부는 넣지 않는다** —
         운전자 눈에는 예약된 자리도 그냥 빈 자리로 보인다. 강탈이 일어나는 이유다.
         """
-        if not self.config.vision_enabled:
+        if not (self.config.vision_enabled or v.driver.watches_for_slots):
             return ()
 
         taken = {w.parked_slot for w in self.vehicles if w.parked_slot is not None}
         pose = v.state.pose
+        here = pose.position
+        reach = self.vision.radius * self.vision.radius
         out: list[VisibleSlot] = []
         for sid, slot in self.lot.slots.items():
+            # 먼저 값싼 거리 검사로 걸러낸다. 주차면 120개 × 차량 20대를 매 틱
+            # 삼각함수로 훑으면 시뮬레이션이 실시간을 못 따라간다.
+            dx = slot.center.x - here.x
+            dy = slot.center.y - here.y
+            if dx * dx + dy * dy > reach:
+                continue
             if not self.vision.can_see(pose, slot.center):
                 continue
             out.append(
@@ -292,10 +329,46 @@ class Simulation:
         self._backlog -= 1
         self.vehicles.append(self._make_vehicle())
 
+    def _prefill(self) -> None:
+        """시작부터 일부 주차면을 채워 둔다."""
+        count = int(round(len(self.lot.slots) * self.config.prefill))
+        if count <= 0:
+            return
+
+        usable = [
+            s for s in self.lot.slots.values()
+            if s.slot_type not in (SlotType.DISABLED, SlotType.EV)
+        ]
+        usable.sort(key=lambda s: self.lot.walk_distance(s.id))
+
+        # 건물에 가까운 자리부터, 다만 딱 잘라 채우지는 않는다 — 실제 주차장에도
+        # 좋은 자리 사이사이에 빈 칸이 남는다.
+        pool = usable[: min(len(usable), int(count * 1.7) + 4)]
+        aisle_heading = {a.id: a.heading for a in self.lot.aisles if a.axis == "h"}
+
+        for slot in self.rng.sample(pool, min(count, len(pool))):
+            approach = aisle_heading.get(self.lot.nodes[slot.access_node].aisle, 0.0)
+            v = self._make_vehicle()
+            pose = v.driver.park_in(slot, approach or 0.0)
+            v.state = SelfState(pose=pose, speed=0.0, steer=0.0, gear=0)
+            v.parked_t = 0.0
+            v.parked_slot = slot.id
+            v.dwell = self.rng.uniform(0.3, 1.0) * self.config.dwell_mean
+            self._free_colors.append(v.color)   # 안내받지 않는 차는 색을 쓰지 않는다
+            v.color = -1
+            self.vehicles.append(v)
+
     def _entry_is_clear(self) -> bool:
+        """진입 램프에 다음 차를 들여보낼 공간이 있는가.
+
+        **주차면에 세워진 차는 세지 않는다.** 입구에서 가장 가까운 주차면은 램프에서
+        7~8m 밖에 안 떨어져 있어서, 그 자리에 차가 서 있으면 주차장 입구가 영원히
+        막힌다 — 실제로 그렇게 막혀서 900초 동안 4대만 들어왔다.
+        """
         p = self._entry_pose.position
         return all(
-            w.state.pose.position.distance_to(p) > self.config.entry_clearance
+            w.parked_slot is not None
+            or w.state.pose.position.distance_to(p) > self.config.entry_clearance
             for w in self.vehicles
         )
 
@@ -304,13 +377,23 @@ class Simulation:
         spec = VehicleSpec.of(vclass)
         plate = self._new_plate()
 
-        # 운전 숙련도는 사람마다 다르다. compliance(협조 성향)는 5단계에서 섞는다 —
-        # 3단계는 관제가 정상 동작하는지부터 확인해야 하므로 전원 협조로 둔다.
+        # 사람마다 운전 실력도, 안내를 따르는 정도도 다르다.
         skill = DrivingSkill(
             cruise_speed=self.rng.uniform(3.0, 4.0),
             lookahead_gain=self.rng.uniform(0.95, 1.20),
         )
-        driver = Driver(spec=spec, lot=self.lot, profile=DriverProfile(skill=skill))
+        profile = DriverProfile(
+            compliance=self._sample_compliance(),
+            walk_preference=self.rng.random(),
+            skill=skill,
+        )
+
+        # 차량마다 독립된 난수원을 준다. 이탈 판정이 한 대의 결과에 따라 다른 대의
+        # 결과까지 흔들면 같은 시드로도 재현이 안 된다.
+        driver = Driver(
+            spec=spec, lot=self.lot, profile=profile,
+            rng=random.Random(self.rng.getrandbits(32)),
+        )
 
         return WorldVehicle(
             plate=plate,
@@ -325,6 +408,17 @@ class Simulation:
                 self.config.dwell_min, self.rng.expovariate(1.0 / self.config.dwell_mean)
             ),
         )
+
+    def _sample_compliance(self) -> float:
+        """이 운전자가 안내를 얼마나 따를 것인가.
+
+        대부분은 그대로 따른다(1.0). 일부만 비협조 성향을 갖는다 — 실제로도
+        대다수는 안내를 따르고 소수가 무시하며, 그 소수가 문제를 만든다.
+        """
+        cfg = self.config
+        if self.rng.random() >= cfg.noncompliant_share:
+            return 1.0
+        return self.rng.uniform(cfg.compliance_low, cfg.compliance_high)
 
     def _update_schedule(self, v: WorldVehicle) -> None:
         """주차를 마친 차량의 체류 시간을 재고, 다 되면 나가라고 알린다."""

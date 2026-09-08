@@ -18,13 +18,14 @@
 from __future__ import annotations
 
 import math
+import random
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Sequence
 
 from sim.common.geometry import Pose, Vec2, angle_diff
 from sim.common.ids import NodeId, SlotId
-from sim.common.lotmap import LotMap
+from sim.common.lotmap import LotMap, Slot
 from sim.common.maneuver import ParkingManeuver, plan_reverse_parking
 from sim.common.messages import GuidanceView, Perception
 from sim.common.vehicle import ControlInput, SelfState, VehicleSpec
@@ -54,6 +55,32 @@ KEEP_RIGHT = 1.35
 
 관제가 그리는 유도선은 통로 중앙에 남는다. 선을 정확히 밟고 가는 것이 아니라
 선을 보고 자기 차선을 잡는 것이 사람이 하는 일이기 때문이다.
+"""
+
+MIN_TEMPTATION_GAIN = 12.0
+"""이만큼은 덜 달려야 이탈을 고민한다(m).
+
+작게 잡으면 모두가 눈앞의 첫 빈자리로 뛰어들어 '유도선을 무시한다'가 아니라
+'유도선이 무의미하다'가 된다. 12m 는 통로 한 구간쯤 — 사람이 "저기가 더 가깝네"
+라고 느낄 만한 거리다.
+"""
+
+MIN_TEMPTATION_AHEAD = 9.0
+"""이 거리보다 가까운 자리는 노리지 않는다(m).
+
+후진 주차는 주차면을 지나쳐 정차한 뒤 들어가는 것이라, 코앞의 자리는 이미 늦었다.
+"""
+
+WALK_WEIGHT_RANGE = (1.0, 5.0)
+"""도보 1m 를 주행 몇 m 로 치는가. `walk_preference` 가 이 범위를 훑는다.
+
+**이 값이 강탈의 진짜 동기다.** 관제의 비용 함수도 주행거리와 도보거리를 저울질하지만
+(`sim/control/cost.py`), 그 저울과 운전자의 저울은 다르다. 관제는 "전체가 조금씩
+덜 달리는" 배분을 하고, 어떤 운전자는 "나는 조금 더 달려도 건물 앞에 대겠다"고
+생각한다. 그 **저울의 불일치**가 사람이 안내를 무시하는 이유다.
+
+거리만 보면 이탈이 거의 일어나지 않는다 — 관제가 이미 가까운 자리를 주기 때문이다.
+실제로 그렇게 만들어 보니 비협조 운전자 31명 중 4명만 이탈했다.
 """
 
 FOLLOW_GAP = 1.60
@@ -96,18 +123,29 @@ class DriverProfile:
     """운전자 한 사람. **이 타입은 agents 밖으로 나가지 않는다.**"""
 
     compliance: float = 1.0
-    """안내를 따르는 정도 (0~1). 1 이면 유도선을 그대로 따른다.
+    """안내를 따르는 정도 (0~1). **유혹 한 번을 참아낼 확률**이다.
 
-    이 값이 이 연구의 독립변수다. 관제는 이 값을 절대 볼 수 없다 (D-001).
-    이 값을 실제로 **사용하는** 이탈 판단은 5단계에서 붙인다 — 3단계는 관제가
-    정상 동작하는지를 먼저 확인해야 하므로 전원 협조로 둔다.
+    더 가까운 빈자리가 눈에 들어올 때마다 한 번씩 판정한다. 1.0 이면 절대 이탈하지
+    않고, 0.0 이면 조건이 맞는 첫 자리에서 바로 이탈한다. 같은 자리를 두 번
+    고민하지는 않는다 — 사람이 그렇듯 한 번 지나치면 끝이다.
+
+    이 값이 이 연구의 독립변수이고, **관제는 이 값을 절대 볼 수 없다** (D-001).
+    관제는 자리를 빼앗긴 뒤에야 센서로 알게 된다. 그 지연이 측정 대상이다.
     """
 
     impatience: float = 0.5
     """조급함. 대기·우회를 얼마나 싫어하는가."""
 
     walk_preference: float = 0.5
-    """도보거리를 얼마나 중시하는가. 높을수록 건물 앞자리를 탐낸다."""
+    """도보거리를 얼마나 중시하는가 (0~1). 높을수록 건물 앞자리를 탐낸다.
+
+    `WALK_WEIGHT_RANGE` 를 훑어 "도보 1m = 주행 몇 m" 로 환산된다.
+    """
+
+    @property
+    def walk_weight(self) -> float:
+        lo, hi = WALK_WEIGHT_RANGE
+        return lo + (hi - lo) * max(0.0, min(1.0, self.walk_preference))
 
     skill: DrivingSkill = field(default_factory=DrivingSkill)
 
@@ -125,8 +163,18 @@ class Driver:
 
     _follower: PathFollower = field(init=False)
     _maneuver: ParkingManeuver | None = field(default=None, init=False)
+    rng: random.Random = field(default_factory=random.Random)
+    """이탈 판정용 난수. 월드가 차량마다 시드를 심어 재현성을 지킨다."""
+
     _revision: int = field(default=-1, init=False)
     _stalled_since: float | None = field(default=None, init=False)
+    _lane: list[Vec2] = field(default_factory=list, init=False)
+    """지금 달리는 통로 구간. 이탈할 때 새 정차 지점만 갈아 끼우면 된다."""
+
+    _approach: float = field(default=0.0, init=False)
+    _target_walk: float = field(default=0.0, init=False)
+    _considered: set[SlotId] = field(default_factory=set, init=False)
+    _defected: bool = field(default=False, init=False)
     _wants_to_leave: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
@@ -149,6 +197,33 @@ class Driver:
     def is_parked(self) -> bool:
         return self.phase is DriverPhase.PARKED
 
+    @property
+    def watches_for_slots(self) -> bool:
+        """빈자리를 두리번거리는가.
+
+        월드가 시야 계산을 할지 말지 물어보는 창구다. 협조적인 운전자는 유도선만
+        보고 가므로 계산할 이유가 없다 — 그리고 이렇게 물어보면 월드가
+        `compliance` 를 직접 읽지 않아도 된다.
+        """
+        return self.profile.compliance < 1.0 and self.phase is DriverPhase.CRUISING
+
+    def park_in(self, slot: Slot, approach_heading: float) -> Pose:
+        """이미 주차를 마친 상태로 시작한다. 시작부터 붐비는 주차장을 만들 때 쓴다.
+
+        나갈 때 쓸 궤적까지 여기서 만들어 둔다. 그게 없으면 이 차만 주차면에서
+        통로 건너편으로 곧장 나가려 해서 교통이 엉킨다 (docs/DECISIONS.md D-012).
+        """
+        self._maneuver = plan_reverse_parking(
+            slot_center=slot.center,
+            slot_heading=slot.heading,
+            approach_heading=approach_heading,
+            rear_axle_to_center=self.spec.rear_axle_to_center,
+            turn_radius=self.spec.min_turn_radius * TURN_RADIUS_MARGIN,
+        )
+        self.target_slot = slot.id
+        self.phase = DriverPhase.PARKED
+        return self._maneuver.final
+
     # ── 매 틱의 판단 ──────────────────────────────────────────────
 
     def decide(self, t: float, state: SelfState, perception: Perception) -> ControlInput:
@@ -167,7 +242,7 @@ class Driver:
             self._accept(perception.guidance)
 
         if self.phase is DriverPhase.CRUISING:
-            return self._cruise(state, perception.guidance, limit)
+            return self._cruise(state, perception, limit)
 
         if self.phase is DriverPhase.STAGING:
             return self._shift_to_reverse(state)
@@ -191,23 +266,148 @@ class Driver:
     # ── 각 단계 ───────────────────────────────────────────────────
 
     def _cruise(
-        self, state: SelfState, guidance: GuidanceView | None, limit: float | None
+        self, state: SelfState, perception: Perception, limit: float | None
     ) -> ControlInput:
+        guidance = perception.guidance
+
         if guidance is not None and guidance.revision != self._revision:
-            # 안내가 갈아끼워졌다 — 자리를 빼앗겼거나 재배치됐다.
-            # 운전자는 이유를 모른다. 선이 바뀌었으니 새 선을 따라갈 뿐이다.
-            self._accept(guidance)
-        elif guidance is None:
+            if self._defected:
+                # 이미 다른 자리를 노리기로 했다. 새 선이 그려져도 따르지 않는다 —
+                # 그게 '비협조'의 정의다. 다만 개정 번호는 봤다고 기억해 둔다.
+                self._revision = guidance.revision
+            else:
+                # 안내가 갈아끼워졌다 — 자리를 빼앗겼거나 재배치됐다.
+                # 운전자는 이유를 모른다. 선이 바뀌었으니 새 선을 따라갈 뿐이다.
+                self._accept(guidance)
+        elif guidance is None and not self._defected:
             # 선이 사라졌다. 갈 곳을 잃었으니 세운다 — 다음 안내를 기다린다.
             self.phase = DriverPhase.ARRIVING
             self.target_slot = None
             return self._halt()
+
+        if self._abandon_if_taken(perception):
+            return self._halt()
+
+        self._consider_defection(state, perception)
 
         if self._follower.is_finished(state):
             self.phase = DriverPhase.STAGING
             return self._halt()
 
         return self._drive(state, limit)
+
+    # ── 이탈 ──────────────────────────────────────────────────────
+
+    def _abandon_if_taken(self, perception: Perception) -> bool:
+        """가려던 자리가 이미 차 있는 것이 눈에 보이면 포기한다.
+
+        배정받은 자리를 남이 차지했을 때도, 내가 노리던 자리를 남이 먼저
+        차지했을 때도 같은 행동이다. 운전자는 그 자리에 도착해서야 알게 되는 것이
+        아니라 멀리서 보고 안다.
+        """
+        if self.target_slot is None:
+            return False
+        for vs in perception.visible_slots:
+            if vs.slot_id == self.target_slot and not vs.looks_free:
+                self.target_slot = None
+                self._defected = False
+                self._revision = -1        # 다음 안내는 새것으로 받는다
+                self.phase = DriverPhase.ARRIVING
+                return True
+        return False
+
+    def _consider_defection(self, state: SelfState, perception: Perception) -> bool:
+        """눈에 들어온 빈자리가 더 나으면, 성향에 따라 안내를 무시하고 그리로 간다.
+
+        **이 함수가 이 연구가 다루는 돌발 상황 그 자체다.** 관제는 이 판단을 볼 수
+        없고, 차가 엉뚱한 자리에 들어앉은 뒤에야 센서로 알게 된다.
+
+        판단 기준 (docs/PLAN.md 7):
+          (a) **운전자 자신의 저울**로 재서 지금 가는 것보다 뚜렷하게 낫고
+              (덜 달리거나, 덜 걷거나, 그 둘의 조합이)
+          (b) 성향 판정(compliance)을 통과하지 못했을 때
+
+        (a) 의 저울이 관제의 저울과 다르다는 점이 핵심이다. 관제는 전체를 보고
+        배분하고, 운전자는 자기만 본다.
+        """
+        if self.profile.compliance >= 1.0 or self.target_slot is None:
+            return False
+        if not perception.visible_slots:
+            return False
+
+        ct = math.cos(state.pose.theta)
+        st = math.sin(state.pose.theta)
+        remaining = self._follower.remaining(state)
+
+        for vs in perception.visible_slots:
+            if not vs.looks_free or vs.slot_id == self.target_slot:
+                continue
+            if vs.slot_id in self._considered:
+                continue        # 한 번 지나친 자리는 다시 고민하지 않는다
+
+            d = vs.center - state.pose.position
+            ahead = d.x * ct + d.y * st
+            if ahead < MIN_TEMPTATION_AHEAD:
+                continue        # 후진 주차를 하기엔 이미 늦었다
+            if not self._is_on_this_aisle(vs.slot_id, state):
+                continue
+
+            self._considered.add(vs.slot_id)
+
+            # 운전자 자신의 저울로 잰다. 덜 달리는 것과 덜 걷는 것을 함께 본다.
+            gain = (remaining - ahead) + self.profile.walk_weight * (
+                self._target_walk - vs.walk_distance
+            )
+            if gain < MIN_TEMPTATION_GAIN:
+                continue
+            if self.rng.random() < self.profile.compliance:
+                continue        # 참았다
+
+            if self._divert(vs.slot_id):
+                return True
+        return False
+
+    def _is_on_this_aisle(self, slot_id: SlotId, state: SelfState) -> bool:
+        """지금 달리는 통로에 접한 자리인가.
+
+        수직 통로를 달릴 때는 옆으로 보이는 주차면이 **다른 통로 소속**이다. 그리로
+        꺾어 들어가면 진입 방향이 맞지 않아 주차가 성립하지 않는다. 주차면 방향이
+        내 진행 방향과 직각일 때만 지금 이 통로의 자리다.
+        """
+        slot = self.lot.slots.get(slot_id)
+        if slot is None:
+            return False
+        return abs(math.cos(slot.heading - state.pose.theta)) < 0.35
+
+    def _divert(self, slot_id: SlotId) -> bool:
+        """목적지를 바꾼다. 관제에는 알리지 않는다 — 알릴 방법도 없다."""
+        slot = self.lot.slots.get(slot_id)
+        if slot is None or len(self._lane) < 2:
+            return False
+
+        maneuver = plan_reverse_parking(
+            slot_center=slot.center,
+            slot_heading=slot.heading,
+            approach_heading=self._approach,
+            rear_axle_to_center=self.spec.rear_axle_to_center,
+            turn_radius=self.spec.min_turn_radius * TURN_RADIUS_MARGIN,
+        )
+        staging = maneuver.staging
+        lead_in = staging.position - Vec2.from_angle(staging.theta) * STAGING_LEAD_IN
+        path = _trim_before(self._lane, lead_in) + [lead_in, staging.position]
+        if len(path) < 2:
+            return False
+
+        self._maneuver = maneuver
+        self._follower.set_path(path, gear=1)
+        self.target_slot = slot_id
+        self._defected = True
+        return True
+
+    def _walk_distance(self, point: Vec2) -> float:
+        """건물 출입구까지의 도보 거리. 운전자도 출입구가 어디인지는 안다."""
+        gates = self.lot.pedestrian_gates
+        return min((point.distance_to(g) for g in gates), default=0.0)
 
     def _shift_to_reverse(self, state: SelfState) -> ControlInput:
         """완전히 멈춘 뒤에만 후진으로 넣는다. 물리가 그것을 강제한다."""
@@ -269,6 +469,9 @@ class Driver:
         self._follower.set_path(drive_path, gear=1)
         self.target_slot = guidance.target_slot
         self._revision = guidance.revision
+        self._lane = lane
+        self._approach = approach
+        self._target_walk = self._walk_distance(slot.center)
         self.phase = DriverPhase.CRUISING
 
     def _exit_path(self, state: SelfState) -> list[Vec2] | None:
