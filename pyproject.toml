@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smart-parking-projector"
+version = "0.1.0"
+description = "빔 프로젝터 주차 유도 시스템 개념검증 시뮬레이터"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",        # 헝가리안 매칭 (linear_sum_assignment)
+    "pyyaml>=6.0",        # 시나리오 정의
+    "fastapi>=0.110",     # 라이브 스트리밍 서버
+    "uvicorn[standard]>=0.29",
+    "websockets>=12.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "matplotlib>=3.8"]
+
+[tool.setuptools.packages.find]
+include = ["sim*", "server*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
