@@ -86,6 +86,18 @@ class SimConfig:
     여기서 제한하면 안 된다 — 주차한 차까지 세면 주차장이 인위적으로 막힌다.
     """
 
+    returning_share: float = 0.35
+    """이미 다녀간 적 있는 번호판이 다시 들어올 비율 (0~1).
+
+    **이게 0 이면 `reputation_aware`(R5)가 구조적으로 작동할 수 없다.** 아무도
+    돌아오지 않는 주차장에서는 번호판별 과거 이력이 언제나 비어 있고, 전략은
+    `local_reassign` 과 똑같이 행동한다. 실제로 그렇게 만들어 놓고 비교했더니
+    세 전략의 숫자가 소수점까지 같았다.
+
+    실제 주차장 이용자의 상당수는 단골이다. 그 사실이 있어야 "알고리즘이 관측만으로
+    학습한다"(D-003)는 서사가 성립한다.
+    """
+
     prefill: float = 0.0
     """시작할 때 미리 차 있는 주차면의 비율 (0~1).
 
@@ -196,6 +208,7 @@ class Simulation:
 
         self._entry_pose = _entry_pose(lot)
         self._plates: set[PlateId] = set()
+        self._departed: list[PlateId] = []
         self._free_colors: list[int] = []
         self._next_color = 0
         self._backlog = 0
@@ -290,7 +303,9 @@ class Simulation:
         if not (self.config.vision_enabled or v.driver.watches_for_slots):
             return ()
 
-        taken = {w.parked_slot for w in self.vehicles if w.parked_slot is not None}
+        # **주차를 마친 차만 세면 안 된다.** 지금 후진해 들어가는 중인 차도 그 자리를
+        # 쓰고 있다. 완료 여부로만 판단하면 두 대가 같은 자리를 노리고 겹쳐 버린다.
+        taken = set(self.traffic.in_slot.values())
         pose = v.state.pose
         here = pose.position
         reach = self.vision.radius * self.vision.radius
@@ -424,8 +439,18 @@ class Simulation:
         """주차를 마친 차량의 체류 시간을 재고, 다 되면 나가라고 알린다."""
         if v.driver.is_parked:
             if v.parked_t is None:
+                # 어느 자리에 댔는지는 **물리적 사실**이지 운전자의 의도가 아니다.
+                sid = self.traffic.in_slot.get(v.plate) or v.driver.target_slot
                 v.parked_t = self.t
-                v.parked_slot = v.driver.target_slot
+
+                if sid is not None and sid in self._claimed(v):
+                    # 들어와 보니 이미 임자가 있다. 이 시뮬레이터는 충돌을 모델링하지
+                    # 않으므로 그냥 겹쳐 버리는데, 그건 화면에서도 통계에서도 거짓말이다.
+                    # 실제 운전자가 하는 일을 시킨다 — 포기하고 나간다.
+                    v.driver.leave()
+                    return
+
+                v.parked_slot = sid
                 self._park_times.append(self.t - v.entered_t)
             elif self.t - v.parked_t >= v.dwell:
                 v.driver.leave()
@@ -433,15 +458,28 @@ class Simulation:
             # 주차면을 떠났다. 더 이상 그 자리를 점유하고 있지 않다.
             v.parked_slot = None
 
+    def _claimed(self, exclude: WorldVehicle) -> set[SlotId]:
+        """지금 다른 차가 차지하고 있는 주차면들."""
+        return {
+            w.parked_slot for w in self.vehicles
+            if w is not exclude and w.parked_slot is not None
+        }
+
     def _retire(self) -> None:
         leaving = [v for v in self.vehicles if v.driver.is_done]
         for v in leaving:
             self._free_colors.append(v.color)
+            self._departed.append(v.plate)   # 단골로 다시 올 수 있다
         if leaving:
             gone = {v.plate for v in leaving}
             self.vehicles = [v for v in self.vehicles if v.plate not in gone]
 
     def _new_plate(self) -> PlateId:
+        """새 번호판, 또는 다녀간 적 있는 단골의 번호판."""
+        if self._departed and self.rng.random() < self.config.returning_share:
+            return self._departed.pop(
+                self.rng.randrange(len(self._departed))
+            )
         while True:
             p = PlateId(
                 f"{self.rng.randint(10, 99)}{self.rng.choice(_HANGUL)}"

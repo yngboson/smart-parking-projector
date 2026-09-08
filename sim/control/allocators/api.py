@@ -70,6 +70,7 @@ class AllocationContext:
         load: Mapping[EdgeKey, int],
         weights: CostWeights | None = None,
         trust: Callable[[PlateId], float] | None = None,
+        bias: Callable[[PlateId, SlotId], float] | None = None,
     ) -> None:
         self.lot = lot
         self.router = router
@@ -77,6 +78,12 @@ class AllocationContext:
         self.load = load
         self.weights = weights or CostWeights()
         self._trust = trust or (lambda _p: 1.0)
+        self._bias = bias or (lambda _p, _s: 0.0)
+        """복구 전략이 평시 배정에 얹는 보정(m 환산).
+
+        `reserve_pool` 과 `reputation_aware` 는 사고가 나기 **전부터** 다르게
+        행동해야 하는 전략이다. 사후 대응만 갈아끼우면 그 둘을 표현할 수 없다.
+        """
 
     def trust(self, plate: PlateId) -> float:
         """번호판별 신뢰도(0~1). 관측된 이탈·강탈 이력의 집계다 (D-003)."""
@@ -103,9 +110,10 @@ class AllocationContext:
         route = self.route_to(req, slot_id)
         if route is None:
             return None
-        return route, slot_cost(
+        cost = slot_cost(
             self.lot, slot_id, req.vehicle_class, route, self.load, self.weights
         )
+        return route, cost + self._bias(req.plate, slot_id)
 
     def take(self, slot_id: SlotId) -> None:
         """한 배치 안에서 같은 자리를 두 대에게 주지 않도록 후보에서 뺀다."""

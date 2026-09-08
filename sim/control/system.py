@@ -34,6 +34,7 @@ from sim.common.messages import (
 )
 from sim.control.allocators import api as alloc_api
 from sim.control.cost import CostWeights
+from sim.control.recovery import api as recovery_api
 from sim.control.routing import LaneRouter, Route, TurnCost
 from sim.control.state import ControlState, VehicleBelief
 
@@ -52,6 +53,7 @@ class ProjectorControl:
         self,
         lot: LotMap,
         allocator: str | alloc_api.Allocator = "greedy_nearest",
+        recovery: str | recovery_api.RecoveryStrategy = "global_rematch",
         *,
         weights: CostWeights | None = None,
         turn_cost: TurnCost | None = None,
@@ -63,6 +65,22 @@ class ProjectorControl:
         self.weights = weights or CostWeights()
         self.allocator = (
             alloc_api.get(allocator) if isinstance(allocator, str) else allocator
+        )
+        self.recovery = (
+            recovery_api.get(recovery) if isinstance(recovery, str) else recovery
+        )
+        """자리를 빼앗겼을 때 어떻게 구제할 것인가. **기본값을 바꾸지 마라** (D-009).
+
+        6종 비교가 이 연구의 결론이므로, 기본 전략은 비교의 기준점이다.
+        """
+
+        self._withheld = self.recovery.withhold(lot)
+        """복구 전략이 평시 배정에서 빼둔 자리 (`reserve_pool`)."""
+
+        self._bias_ctx = recovery_api.BiasContext(
+            lot=lot,
+            trust=self.state.log.trust,
+            reroute_count=self._reroute_count,
         )
 
         self.inferences: list[ControlInference] = []
@@ -79,8 +97,87 @@ class ProjectorControl:
 
         commands: list[ProjectorCommand] = list(self._clears(events))
         self._note_reasons(inferences)
+        commands.extend(self._recover(inferences))
         commands.extend(self._assign())
         return commands
+
+    # ── 복구 ──────────────────────────────────────────────────────
+
+    def _recover(self, inferences: Sequence[ControlInference]) -> list[ProjectorCommand]:
+        """강탈이 일어났다. 복구 전략에게 넘긴다.
+
+        전략이 손대지 못한 피해 차량은 그대로 두면 된다 — 다음 줄의 평시 배정이
+        받아준다. 복구가 실패해도 차가 갈 곳을 잃지는 않는다.
+        """
+        thefts = [i for i in inferences if isinstance(i, SlotStolen)]
+        if not thefts:
+            return []
+
+        victims = tuple(dict.fromkeys(i.victim for i in thefts))
+        ctx = self._recovery_context(set(victims))
+        request = recovery_api.RecoveryRequest(
+            t=self.state.t,
+            victims=victims,
+            stolen_slots=tuple(i.slot_id for i in thefts),
+        )
+
+        out: list[ProjectorCommand] = []
+        taken: set[SlotId] = set()
+        for move in self.recovery.recover(request, ctx):
+            if move.slot_id in taken or move.plate not in self.state.vehicles:
+                continue        # 전략이 같은 자리를 두 번 준 경우 — 조용히 무시한다
+            taken.add(move.slot_id)
+            out.append(self._commit_recovery(move))
+        return out
+
+    def _recovery_context(self, victims: set[PlateId]) -> recovery_api.RecoveryContext:
+        entry = self.lot.entry_nodes[0]
+        candidates = [
+            recovery_api.Candidate(
+                plate=v.plate,
+                vehicle_class=v.vehicle_class,
+                from_node=v.last_node or entry,
+                arrived_from=v.prev_node,
+                held_slot=v.target_slot,
+                reroute_count=v.reroute_count,
+                is_victim=v.plate in victims,
+            )
+            for v in self.state.vehicles.values()
+            if not v.exited and v.parked_slot is None
+        ]
+        return recovery_api.RecoveryContext(
+            lot=self.lot,
+            router=self.router,
+            candidates=candidates,
+            # 예비석도 여기서는 쓸 수 있다 — 그러라고 남겨둔 자리다.
+            free_slots=self.state.available_slots(),
+            load=self.state.guidance_load(),
+            weights=self.weights,
+            trust=self.state.log.trust,
+        )
+
+    def _commit_recovery(self, move: recovery_api.Reassignment) -> GuidanceCommand:
+        v = self.state.vehicles[move.plate]
+        if move.reason is GuidanceReason.REROUTE:
+            v.reroute_count += 1
+        elif move.reason is GuidanceReason.RESHUFFLE:
+            v.reshuffle_count += 1
+
+        self.state.reserve(move.plate, move.slot_id, move.route)
+        self._pending_reason.pop(move.plate, None)
+        self._retry_at.pop(move.plate, None)
+
+        return GuidanceCommand(
+            plate=move.plate,
+            target_slot=move.slot_id,
+            polyline=guidance_polyline(self.lot, move.route, move.slot_id),
+            reason=move.reason,
+            revision=v.revision,
+        )
+
+    def _reroute_count(self, plate: PlateId) -> int:
+        v = self.state.vehicles.get(plate)
+        return 0 if v is None else v.reroute_count
 
     # ── 유도선 소거 ────────────────────────────────────────────────
 
@@ -125,7 +222,8 @@ class ProjectorControl:
         if not waiting:
             return []
 
-        available = self.state.available_slots()
+        # 예비석은 평시 배정에서 뺀다. 사고가 났을 때 즉시 투입하려고 남긴 자리다.
+        available = [s for s in self.state.available_slots() if s not in self._withheld]
         if not available:
             self._defer(waiting)
             return []
@@ -138,6 +236,7 @@ class ProjectorControl:
             load=self.state.guidance_load(),
             weights=self.weights,
             trust=self.state.log.trust,
+            bias=lambda plate, sid: self.recovery.bias(plate, sid, self._bias_ctx),
         )
 
         assignments = self.allocator.allocate(requests, ctx)

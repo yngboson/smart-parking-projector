@@ -205,6 +205,8 @@ class Driver:
         보고 가므로 계산할 이유가 없다 — 그리고 이렇게 물어보면 월드가
         `compliance` 를 직접 읽지 않아도 된다.
         """
+        if self.phase is DriverPhase.STAGING:
+            return True     # 후진 직전의 마지막 확인 — 성향과 무관하다
         return self.profile.compliance < 1.0 and self.phase is DriverPhase.CRUISING
 
     def park_in(self, slot: Slot, approach_heading: float) -> Pose:
@@ -245,7 +247,7 @@ class Driver:
             return self._cruise(state, perception, limit)
 
         if self.phase is DriverPhase.STAGING:
-            return self._shift_to_reverse(state)
+            return self._shift_to_reverse(state, perception)
 
         if self.phase is DriverPhase.REVERSING:
             return self._reverse(state)
@@ -409,8 +411,15 @@ class Driver:
         gates = self.lot.pedestrian_gates
         return min((point.distance_to(g) for g in gates), default=0.0)
 
-    def _shift_to_reverse(self, state: SelfState) -> ControlInput:
-        """완전히 멈춘 뒤에만 후진으로 넣는다. 물리가 그것을 강제한다."""
+    def _shift_to_reverse(self, state: SelfState, perception: Perception) -> ControlInput:
+        """완전히 멈춘 뒤에만 후진으로 넣는다. 물리가 그것을 강제한다.
+
+        후진을 시작하기 **직전에 한 번 더** 자리를 확인한다. 여기가 마지막 기회다 —
+        일단 들어가기 시작하면 남이 이미 있는 자리에 그대로 밀고 들어가게 된다.
+        관제가 자리를 잘못 줬든, 오는 동안 누가 먼저 차지했든, 눈으로 보면 안다.
+        """
+        if self._abandon_if_taken(perception):
+            return self._halt()
         if state.speed > 0.04 or self._maneuver is None:
             return self._halt()
         self._follower.set_path(self._maneuver.reverse_path, gear=-1)

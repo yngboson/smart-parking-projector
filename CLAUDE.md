@@ -99,7 +99,7 @@ sim/common/      geometry.py, ids.py, messages.py, lotmap.py, vehicle.py, maneuv
 sim/world/       lot_builder.py, physics.py, sensors.py, traffic.py, projector.py, simulation.py
 sim/control/     api.py, system.py, state.py, routing.py, cost.py, allocators/, recovery/
 sim/agents/      driver.py, perception.py, driving.py
-sim/scenarios/   *.yaml  (도착률, 성향 분포, 시드, 사용할 전략 이름)
+sim/scenarios/   *.yaml + loader.py  (도착률, 성향 분포, 시드, 사용할 전략 이름)
 sim/metrics/     collector.py, trace_writer.py
 sim/experiments/ run_matrix.py, report.py
 layouts/         주차장 도면 JSON (코드에 좌표를 하드코딩하지 말 것)
@@ -116,6 +116,10 @@ tests/
 2. 해당 디렉터리의 `api.py` 프로토콜을 구현
 3. 시나리오 YAML 에서 이름으로 선택
 4. `sim/experiments/run_matrix.py` 의 비교 매트릭스에 이름 추가
+
+복구 전략은 셋을 건드릴 수 있습니다 — 사고 후 대응(`recover`), 평시에 빼둘 자리
+(`withhold`), 평시 배정 비용 보정(`bias`). 뒤의 둘은 기본 구현이 아무것도 하지
+않으므로, `reserve_pool` 과 `reputation_aware` 외에는 신경 쓰지 않아도 됩니다.
 
 기존 전략(특히 기본값 `global_rematch`)을 **다른 것으로 바꾸지 마세요.** 비교 실험 대상입니다.
 

@@ -135,15 +135,23 @@ class LiveSession:
         self.layout = layout
         self.scenario = scenario
         self.config = _scenario_config(scenario)
-        self.sim = Simulation(self.lot, config=self.config)
+        self.sim = self._build()
         self.speed = 1.0
         self.paused = False
+
+    def _build(self) -> Simulation:
+        """시나리오가 지정한 할당·복구 전략으로 시뮬레이션을 만든다."""
+        try:
+            control = load_named(self.scenario).build_control(self.lot)
+        except FileNotFoundError:
+            control = None
+        return Simulation(self.lot, control=control, config=self.config)
 
     def reset(self, **changes) -> None:
         """설정을 바꿔 처음부터 다시. 발표 중 슬라이더를 돌리는 순간이다."""
         clean = {k: v for k, v in changes.items() if v is not None}
         self.config = replace(self.config, **clean)
-        self.sim = Simulation(self.lot, config=self.config)
+        self.sim = self._build()
 
     def apply(self, msg: dict) -> None:
         cmd = msg.get("cmd")
@@ -165,7 +173,7 @@ class LiveSession:
             name = str(msg.get("name", DEFAULT_SCENARIO))
             self.scenario = name
             self.config = _scenario_config(name)
-            self.sim = Simulation(self.lot, config=self.config)
+            self.sim = self._build()
 
     @property
     def hello(self) -> dict:

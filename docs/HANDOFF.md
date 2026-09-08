@@ -1,4 +1,4 @@
-# 인수인계 (2026-09-09 갱신 · 5단계까지)
+# 인수인계 (2026-09-09 갱신 · 6단계까지)
 
 > **다음 세션은 이 문서 → `CLAUDE.md` → `docs/DECISIONS.md` 순서로 읽으면 됩니다.**
 > `docs/PLAN.md` 는 전체 로드맵이고, 이 문서는 "지금 어디까지 왔고 다음에 뭘 하나"입니다.
@@ -15,8 +15,8 @@
 그래서 **관제 알고리즘은 운전자의 성향(`compliance`)을 절대 볼 수 없게** 코드를
 물리적으로 분리했고, 그 경계를 테스트로 강제합니다. 이게 무너지면 연구가 무의미해집니다.
 
-**0~5단계 완료. 강탈이 실제로 일어나고 관제가 센서만으로 인지합니다.
-다음은 6단계(복구 전략 6종) — 이 연구의 결론이 나오는 단계입니다.**
+**0~6단계 완료. 복구 전략 6종이 플러그인으로 들어갔고 같은 시드로 비교됩니다.
+다음은 7단계(무안내 베이스라인) — "왜 이 시스템이 필요한가"의 첫 슬라이드입니다.**
 
 ---
 
@@ -62,9 +62,10 @@ python -m sim.metrics.trace_writer --duration 240 --out runs/demo    # 녹화
 | 2 | 자전거 모델, Pure Pursuit, 후진 주차 | ✅ |
 | 3 | 관제 알고리즘 + 센서 + 프로젝터 + 계층 배선 | ✅ |
 | 4 | 뷰어 연동 — WebSocket 라이브 + 녹화본 재생 | ✅ |
-| 5 | **차량 성향 · 이탈 판단 · 강탈 감지 · 시나리오** | ✅ |
-| 6 | **복구 전략 6종 — 다음 작업** | ⬜ |
-| 7~10 | 베이스라인, 실험 하네스, STL, 발표 마감 | ⬜ |
+| 5 | 차량 성향 · 이탈 판단 · 강탈 감지 · 시나리오 | ✅ |
+| 6 | **복구 전략 6종 + 플러그인 구조** | ✅ |
+| 7 | **무안내 베이스라인 — 다음 작업** | ⬜ |
+| 8~10 | 실험 하네스, STL, 발표 마감 | ⬜ |
 
 ### 3단계 실측 (시드 6개 × 1200초, 도착률 0.15/초)
 
@@ -93,6 +94,31 @@ python -m sim.metrics.trace_writer --duration 240 --out runs/demo    # 녹화
 마지막 줄이 이 표에서 가장 중요합니다. 같은 혼잡도에서 아무도 배신하지 않으면
 강탈이 **0 건**입니다 — 측정에 바닥 노이즈가 없다는 뜻이고, 그래야 강탈 횟수를
 지표로 쓸 수 있습니다. 여기까지 오는 데 센서를 두 번 고쳤습니다 (D-015).
+
+### 6단계 실측 (rush_hour · 시드 0~1 · 300초 · 비협조 35%)
+
+| 전략 | 주차 | 평균 | **p95** | 강탈 | 재탐색 | **연쇄** |
+|---|---|---|---|---|---|---|
+| `local_reassign` | 30 | 49.8 | 183.8 | 4.0 | 3.5 | 0 |
+| `global_rematch` *(기본)* | 35 | 45.0 | **65.2** | 11.5 | 10.5 | **54** |
+| `chain_shift` | 34 | 44.4 | **65.0** | 5.0 | 4.5 | **5** |
+| `reserve_pool` | 35 | 45.5 | 80.0 | **1.5** | 1.5 | 0 |
+| `reputation_aware` | 30 | 49.8 | 183.8 | 4.0 | 3.5 | 0 |
+| `fairness_weighted` | 30 | 49.8 | 183.8 | 4.0 | 3.5 | 0 |
+
+**읽는 법** — 이 표는 결론이 아니라 **다음 세션이 확인할 가설**입니다. 시드 2개짜리
+예비 측정이고, 통계적 판단은 8단계 하네스(시드 30개)의 몫입니다.
+
+- **`chain_shift` 가 흥미롭습니다.** `global_rematch` 와 사실상 같은 p95(65초)를
+  내면서 휘말린 차량이 **54대 → 5대**입니다. "전체를 다시 푸는 것"의 이득 대부분이
+  실은 **짧은 연쇄 하나**에서 나온다는 뜻일 수 있습니다. 사실이면 발표의 핵심 소재입니다.
+- **`global_rematch` 가 강탈을 더 만듭니다** (11.5 vs 4.0). 예약이 계속 바뀌니
+  누군가의 자리가 남의 눈앞에 놓이는 일이 잦아지는 것으로 보입니다. 확인이 필요합니다.
+- **`reputation_aware` 와 `fairness_weighted` 가 `local_reassign` 과 숫자까지
+  같습니다.** 버그가 아니라 **측정 구간이 짧아서**입니다. 두 전략은 과거 이력이
+  쌓여야 작동하는데, 300초 안에는 재방문도 반복 피해자도 거의 없습니다.
+  **8단계에서는 더 길게(2000초 이상) 돌려야 이 둘을 평가할 수 있습니다.**
+  `SimConfig.returning_share`(기본 0.35)가 단골 비율입니다.
 
 **교착 없음.** 3단계에서 차간거리를 배선하자 시뮬레이션이 통째로 굳었고, 원인을 찾는 데
 네 번의 시도가 필요했습니다. 전말은 `docs/DECISIONS.md` D-012 와 `sim/world/traffic.py`
@@ -125,12 +151,16 @@ sim/control/     관제 — sim.common 외에는 아무것도 import 하지 않�
   api.py         ControlSystem 프로토콜 + NullControl(무안내 베이스라인 뼈대)
   system.py      ProjectorControl — 기본 관제 본체
   state.py       센서로만 갱신하는 세계 모델. 강탈·이탈 판정, 번호판별 관측 이력
+                 '나가는 중'(departing) 판정이 여기 있다 — D-016
   routing.py     레인 그래프 A* + 회전 페널티 (좌회전이 더 비쌈)
   cost.py        주차면 비용 = 주행거리 + 회전 + 혼잡 + 도보거리 + 차종제약
   allocators/
     api.py       Allocator 프로토콜 + 레지스트리
     greedy_nearest.py   기준선 전략
-  recovery/      ⬜ 미작성 (6단계)
+  recovery/      ★ 6종 비교 대상 (D-009). 기본값 global_rematch 를 바꾸지 말 것
+    api.py       recover / withhold / bias 세 훅 + 레지스트리
+    local_reassign.py  global_rematch.py  chain_shift.py
+    reserve_pool.py    reputation_aware.py  fairness_weighted.py
 
 sim/agents/      차량 — sim.common 외에는 아무것도 import 하지 않음
   driving.py     Pure Pursuit + 종방향 제어 (운전 기술)
@@ -178,53 +208,40 @@ tests/
 
 ---
 
-## 다음 작업 — 6단계 (복구 전략 6종)
+## 다음 작업 — 7단계 (무안내 베이스라인)
 
-**이 연구의 결론이 나오는 단계입니다.** 강탈은 이제 실제로 일어납니다. 남은 질문은
-하나입니다 — **빼앗긴 사람을 어떻게 구제하는 것이 가장 매끄러운가.**
+**발표의 첫 슬라이드가 여기서 나옵니다.** "왜 이 시스템이 필요한가"는 유도선이
+없을 때가 어떤지를 같은 조건에서 보여줘야 답이 됩니다.
 
-지금은 피해 차량을 그냥 `greedy_nearest` 에 다시 넣습니다. 사실상 `local_reassign`
-이며, `sim/control/system.py` 의 `_note_reasons` / `_assign` 이 그 자리입니다.
-**기본값은 `global_rematch` 여야 합니다** (D-009).
+유도선 없이 운전자가 통로를 돌며 육안으로 자리를 찾는 모드입니다. 그 결과를
+안내 모드와 **같은 시드로** 나란히 놓으면 탐색 시간·주행거리·통로 혼잡도의 차이가
+그대로 나옵니다 (D-010).
 
 ### 만들 것
 
 | 파일 | 내용 |
 |---|---|
-| `sim/control/recovery/api.py` | `RecoveryStrategy` 프로토콜 + 레지스트리 (allocators 와 같은 모양) |
-| `sim/control/recovery/local_reassign.py` | R1 — 피해 차량에게만 최근접 빈 자리 |
-| `sim/control/recovery/global_rematch.py` | **R2 기본값** — 미주차 차량 × 빈 자리 헝가리안 재매칭 |
-| `sim/control/recovery/chain_shift.py` | R3 — 최소비용 증가경로로 예약 연쇄 이양 |
-| `sim/control/recovery/reserve_pool.py` | R4 — k% 를 예비로 남겨 즉시 투입 |
-| `sim/control/recovery/reputation_aware.py` | R5 — 관측된 이탈 이력으로 신뢰도 추정 |
-| `sim/control/recovery/fairness_weighted.py` | R6 — 누적 재탐색이 많은 차량에 우선권 |
+| `sim/agents/driver.py` | 안내가 없을 때의 행동 — 통로를 돌며 눈에 띄는 빈자리로 |
+| `sim/world/simulation.py` | `NullControl` 을 쓸 때 `vision_enabled` 를 강제로 켠다 |
+| `sim/scenarios/*.yaml` | `control.allocator: none` 같은 표기로 베이스라인 지정 |
 
 ### 이미 준비된 것 (다시 만들지 마세요)
 
-- `scipy.optimize.linear_sum_assignment` — 헝가리안. `pyproject.toml` 에 이미 있습니다
-- `ControlState.log` — 번호판별 `deviations` / `steals` / `victim_count` 와
-  `trust(plate)`. **R5 가 쓸 재료가 이미 쌓이고 있습니다** (D-003)
-- `VehicleBelief.reroute_count` / `reshuffle_count` — R6 의 우선권 근거
-- `AllocationContext` — 후보 주차면·경로·비용·신뢰도를 한 번에 준다. 복구 전략도
-  같은 도구를 쓰면 됩니다
-- `GuidanceReason.RESHUFFLE` — 남의 강탈을 흡수하느라 목적지가 바뀐 차량용.
-  `reroute_count` 와 **따로 셉니다**. 섞으면 "피해자 수"와 "영향받은 차량 수"가
-  구분되지 않아 전략 비교가 무의미해집니다
-- `sim/scenarios/*.yaml` 의 `control.recovery` — 이름으로 고르게 되어 있습니다
+- **`sim.control.api.NullControl`** — 아무 안내도 하지 않는 관제. 이미 있습니다.
+  `Simulation(lot, control=NullControl(), config=...)` 로 바로 돌아갑니다
+- **`SimConfig.vision_enabled`** — 켜면 협조적인 운전자에게도 육안 관측이 갑니다.
+  베이스라인에서는 **모두가** 눈으로 찾아야 하므로 켜야 합니다
+- **`agents/perception.py`** 의 시야 규칙과 `Driver._consider_defection` 의 판단 —
+  "눈에 보이는 자리 중 내 기준으로 가장 좋은 것"을 고르는 로직이 이미 있습니다.
+  베이스라인은 그 판단을 **유도선 없이** 쓰는 것뿐입니다
+- 프레임 포맷은 그대로입니다. `guidance` 가 빈 배열이 되고 뷰어는 바닥에 선을
+  그리지 않습니다 — 코드를 고칠 필요가 없습니다
 
-### 비교 방법
+### 주의
 
-같은 시나리오 · 같은 시드로 전략만 바꿔 돌립니다. 시뮬레이션은 재현 가능합니다
-(`test_defection.py::test_defection_is_reproducible`).
-
-```bash
-# 8단계에서 만들 하네스가 이 일을 자동화합니다
-python -m sim.experiments.run_matrix --scenario sim/scenarios/rush_hour.yaml --seeds 10
-```
-
-비교 지표: 평균/p95 주차 소요시간, 총 우회거리, 재탐색 횟수, 연쇄 재배치 대수,
-그리고 **교착 발생 빈도** — "전체 재최적화가 교착을 더 많이 만든다" 같은 결과가
-나오면 발표에서 강한 소재입니다.
+운전자가 아무 자리도 못 찾으면 통로를 계속 돌아야 합니다. 지금 `Driver` 는 안내가
+없으면 **그 자리에 섭니다**(`ARRIVING` 에서 정지). 베이스라인에서는 그러면 입구가
+막히므로, 안내가 없을 때 "일단 통로를 따라 순회한다"는 행동이 필요합니다.
 
 ---
 
@@ -246,20 +263,31 @@ python -m sim.experiments.run_matrix --scenario sim/scenarios/rush_hour.yaml --s
 `hungarian_batch` / `zone_late_binding` 이 개선해야 할 지점이고, 비교 실험의 재료입니다.
 고치려 하지 말고 **다른 전략을 추가**하세요 (`CLAUDE.md` 의 '전략을 추가하는 방법').
 
-### 2. 복구가 아직 `greedy_nearest` 재투입입니다
+### 2. 만차에서 시뮬레이션이 느립니다 — 8단계 하네스의 발목을 잡습니다
 
-피해 차량을 그냥 할당 전략에 다시 넣고 있어, 사실상 `local_reassign` 으로 동작합니다.
-**기본값은 `global_rematch` 여야 합니다** (D-009). 6단계의 본체입니다.
+`rush_hour`(차량 약 110대)에서 **실시간의 0.2배** 정도로 돕니다. 300초를 돌리는 데
+25분쯤 걸립니다. 8단계의 "시드 30개 × 전략 6종" 매트릭스는 이 속도로는 며칠 걸립니다.
 
-### 3. `RouteDeviation` 을 관제가 활용하지 않습니다
+**어디가 무거운가** (측정하고 고치세요, 추측하지 말고):
+- `Simulation._clearance` — 차량 쌍마다 꼭짓점 4개씩 O(n²). 격자 색인을 쓰면
+  근처 차량만 보면 됩니다 (`sensors.grid_index` 가 이미 있습니다)
+- `Simulation._visible_slots` — 차량마다 주차면 120개를 훑습니다. 거리 사전 검사가
+  있지만 여전히 전수 순회입니다
+- `AisleTraffic.update` — 차량마다 주차면 격자를 조회합니다
 
-통로 검지기가 이탈을 **강탈보다 먼저** 잡아냅니다 (`sim/control/state.py`).
-지금은 기록만 하고 아무 대응도 하지 않습니다.
+병렬화(시드별 프로세스)도 쉬운 승리입니다. `multiprocessing.Pool` 로 시드를 흩으면
+코어 수만큼 빨라지고, 시뮬레이션이 이미 재현 가능하므로 결과가 달라지지 않습니다.
 
-이건 기회입니다 — 강탈이 확정되기 전에 선제 대응하는 전략을 만들 수 있고,
-"사후 복구 vs 조기 경보" 비교는 발표에서 좋은 이야깃거리입니다. 다만 조기 경보는
-오경보를 낳으므로(정상 주행 중에도 검지기 순서가 어긋날 수 있음) 그 대가를 함께
-측정해야 합니다.
+### 3. 같은 주차면에 두 대가 들어가는 일이 드물게 남아 있습니다
+
+이 시뮬레이터는 **충돌을 모델링하지 않습니다.** 두 차가 같은 자리를 노리고 동시에
+도착하면 그냥 겹칩니다. 방어를 세 겹 넣었습니다 — 눈에 보이는 점유 여부를 물리적
+사실로 판정하고, 후진 직전에 한 번 더 확인하고, 그래도 겹치면 진 쪽이 포기하고
+나갑니다 (`Simulation._update_schedule`).
+
+만차 조건 100여 대 중 0~1건까지 줄었지만 0 은 아닙니다. 발표 화면에서 눈에 띌 수
+있으니, 신경 쓰인다면 근본 해결은 **차량 간 충돌 판정**입니다 — 다만 그것을 넣으면
+교착 대책(D-012)을 다시 손봐야 합니다.
 
 ---
 

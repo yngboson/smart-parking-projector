@@ -36,6 +36,17 @@ from sim.common.messages import (
 )
 from sim.control.routing import EdgeKey, Route
 
+OVERSHOOT_TOLERANCE = 4
+"""목적지 노드를 이만큼 지나쳐도 이탈로 보지 않는다 (검지기 개수).
+
+후진 주차는 주차면을 7m 쯤 지나쳐 정차한 뒤 들어가므로, 정상 주차도 목적지 뒤의
+검지기를 두세 개 밟는다. 그걸 이탈로 세면 모든 주차가 이탈로 기록된다.
+
+반대로 **아무리 지나쳐도 봐주면 이탈을 영영 못 잡는다.** 안내를 무시하고 더 좋은
+자리를 찾아 계속 달리는 차가 바로 그 모습이기 때문이다 — 통로를 벗어나는 것이
+아니라 **자기 자리를 지나쳐 계속 가는 것**이 이 시뮬레이터의 이탈 형태다.
+"""
+
 
 @dataclass(slots=True)
 class SlotBelief:
@@ -81,14 +92,35 @@ class VehicleBelief:
     """남의 강탈을 흡수하느라 목적지가 바뀐 횟수. 본인은 피해자가 아니다."""
 
     parked_slot: SlotId | None = None
+    departing: bool = False
+    """주차면을 비우고 나가는 중이라고 관제가 판단했는가.
+
+    **이 구분이 없으면 관제가 출차하는 차에게 새 자리를 예약해 준다.** 그 자리는
+    아무도 쓰지 않은 채 묶이고, 진짜 도착 차량은 만차라고 거절당한다. 게다가 그
+    자리를 다른 차가 차지하면 **있지도 않은 강탈**로 기록된다.
+
+    관제가 이걸 어떻게 아는가: 주차면 센서가 눌렸다 풀렸는데 입구 ANPR 을 다시
+    지나지 않았다면, 그 차는 자리를 비우고 나가는 중이다. 실제 하드웨어로도
+    할 수 있는 추론이다.
+    """
+
     exited: bool = False
     deviated: bool = False
     """이번 안내에서 이미 이탈 판정을 냈는가. 한 번만 보고한다."""
+
+    past_goal: set[NodeId] = field(default_factory=set)
+    """목적지 노드를 지나친 뒤 밟은 **서로 다른** 검지기들.
+
+    같은 검지기를 몇 번 밟았는지가 아니라 몇 개를 지나쳤는지가 중요하다.
+    후진 주차는 지나쳤던 검지기를 되밟으며 들어가므로, 횟수로 세면 정상 주차도
+    이탈로 잡힌다 — 실제로 전원 협조 조건에서 89건이 오탐으로 잡혔다.
+    """
 
     @property
     def needs_assignment(self) -> bool:
         return (
             not self.exited
+            and not self.departing
             and self.parked_slot is None
             and self.target_slot is None
         )
@@ -175,8 +207,10 @@ class ControlState:
             v.route = None
             v.route_index = 0
             v.parked_slot = None
+            v.departing = False
             v.exited = False
             v.deviated = False
+            v.past_goal = set()
         v.last_seen_t = e.t
         if self.lot.entry_nodes:
             v.last_node = self.lot.entry_nodes[0]
@@ -221,6 +255,7 @@ class ControlState:
             if v is not None:
                 self._release_other_reservations(occupant, keep=e.slot_id)
                 v.parked_slot = e.slot_id
+                v.departing = False
                 v.target_slot = None
                 v.route = None
                 v.route_index = 0
@@ -245,8 +280,11 @@ class ControlState:
             return []
 
         if v.route_index >= len(route.nodes) - 1:
-            # 목적지 노드를 이미 지났다 — 주차 조작 중이라 검지기가 더 울린다.
-            return []
+            # 목적지 노드를 이미 지났다. 두세 개까지는 후진 주차의 정상 절차다.
+            v.past_goal.add(e.node_id)
+            if len(v.past_goal) <= OVERSHOOT_TOLERANCE:
+                return []
+            # 그 이상 지나쳤다면 이 차는 자기 자리를 지나쳐 계속 가고 있다.
 
         v.deviated = True
         self.log.of(e.plate).deviations += 1
@@ -278,6 +316,7 @@ class ControlState:
         v.route = route
         v.route_index = 0
         v.deviated = False
+        v.past_goal = set()
         v.revision += 1
 
     def release(self, slot_id: SlotId) -> None:
@@ -290,6 +329,10 @@ class ControlState:
             v = self.vehicles.get(belief.occupant)
             if v is not None and v.parked_slot == belief.slot_id:
                 v.parked_slot = None
+                # 자리를 비웠고 입구를 다시 지나지도 않았다 — 나가는 중이다.
+                v.departing = True
+                v.route = None
+                v.target_slot = None
         belief.status = SlotStatus.FREE
         belief.occupant = None
         belief.reserved_for = None

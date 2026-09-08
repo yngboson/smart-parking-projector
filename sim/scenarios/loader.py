@@ -41,6 +41,21 @@ class Scenario:
         """이 시나리오를 주어진 시드로 돌릴 설정."""
         return replace(self.config, seed=seed)
 
+    def build_control(self, lot, recovery: str | None = None):
+        """이 시나리오가 지정한 전략으로 관제를 만든다.
+
+        :param recovery: 시나리오의 복구 전략을 덮어쓴다. 전략 비교 실험이
+            **같은 시나리오 위에서 전략만** 바꿔 돌리기 위한 통로다.
+        """
+        from sim.control.system import ProjectorControl
+
+        return ProjectorControl(
+            lot,
+            allocator=self.allocator,
+            recovery=recovery or self.recovery,
+            slot_sensor_mode=self.config.slot_sensor_mode,
+        )
+
 
 def load(path: str | Path) -> Scenario:
     """YAML 하나를 읽어 `Scenario` 로 만든다.
