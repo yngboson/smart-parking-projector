@@ -1,27 +1,54 @@
 /**
  * 뷰어 부트스트랩.
  *
- * 현재 단계(도면 미리보기)에서는 `demo.js` 의 진행자가 만든 지시를 그린다.
- * 3~4단계에서 이 자리에 실제 Python 시뮬레이션 프레임 스트림이 들어온다.
- * 프레임 포맷은 라이브(WebSocket)와 녹화본(trace.jsonl)이 동일하므로 뷰어 코드는
- * 한 벌만 둔다 (docs/DECISIONS.md D-005).
+ * 화면에 보이는 모든 것은 **Python 시뮬레이션이 보낸 프레임**이다. 뷰어는 아무것도
+ * 결정하지 않는다 — 어느 자리를 줄지, 누가 언제 나갈지, 차가 어떻게 꺾는지는 전부
+ * 저쪽에서 이미 풀린 문제다. 여기서는 그리기만 한다.
+ *
+ * 이 분리가 중요한 이유: 뷰어가 조금이라도 시뮬레이션을 흉내 내기 시작하면
+ * "화면에서는 잘 되는데 실험 결과와 다른" 상황이 생긴다. 발표에서 보여주는 화면과
+ * 표에 적는 숫자가 같은 실행에서 나와야 한다.
+ *
+ * 라이브(WebSocket)와 녹화본(trace.jsonl)은 같은 포맷이므로 이 파일은 둘을
+ * 구분하지 않는다 (docs/DECISIONS.md D-005).
  */
 
 import { Stage, THREE } from "/js/scene.js";
 import { buildFloor } from "/js/lot_floor.js";
 import { GuidanceLine, TargetMarker } from "/js/guidance.js";
-import { makeTrack } from "/js/track.js";
 import { Palette } from "/js/palette.js";
 import { VehicleModels, buildContactShadow, pickBodyColor } from "/js/vehicles.js";
-import { DemoDirector } from "/js/demo.js";
+import { connectBestSource } from "/js/source.js";
 
 const $ = (id) => document.getElementById(id);
 
-/** 입구에서 안내를 받고 출발하기까지 정차하는 시간 (초). */
-const GATE_PAUSE = 3.4;
+/**
+ * 프레임 사이를 메우는 보간의 세기 (1/초).
+ *
+ * 시뮬레이션은 초당 10프레임(녹화본은 5)을 보내는데 화면은 60fps 다. 그대로 찍으면
+ * 차가 뚝뚝 끊겨 보인다. 클수록 프레임에 빨리 붙고 작을수록 부드럽지만 뒤처진다.
+ */
+const SMOOTHING = 14.0;
 
-/** 유도선 끝에 도착한 뒤 후진 주차에 걸리는 시간 (초). 2단계 실측값 13.8초. */
-const PARK_MANEUVER = 4.0;
+/** 입구 안내 말풍선을 띄워두는 시간 (초). */
+const BUBBLE_HOLD = 4.5;
+
+/** 이벤트 로그에 남기는 최대 줄 수. */
+const EVENT_LOG = 6;
+
+/**
+ * 모델 이름별 전장·전폭 (m). STL 이 없을 때 그릴 박스 크기다.
+ *
+ * `sim/common/ids.py` 의 `VehicleClass.footprint` 와 같은 값이며, 프레임에 크기를
+ * 싣지 않기 위해 여기 둔다 — 매 프레임 모든 차량의 제원을 보내는 것은 낭비다.
+ */
+const MODEL_SIZE = {
+  hatch_a: [3.6, 1.6],
+  sedan_a: [4.7, 1.85],
+  suv_a: [4.9, 1.9],
+  van_a: [5.2, 1.95],
+};
+const DEFAULT_SIZE = [4.7, 1.85];
 
 export async function boot() {
   const lot = await fetch("/api/layout").then((r) => r.json());
@@ -35,15 +62,17 @@ export async function boot() {
   await models.load();
 
   const world = new App(stage, lot, models);
-  await world.start();
-
-  wireControls(stage, world);
 
   $("lot-name").textContent =
     `${lot.name} · ${lot.slots.length}면 · ${Math.round(lot.bounds[2] - lot.bounds[0])} × ` +
     `${Math.round(lot.bounds[3] - lot.bounds[1])} m`;
 
-  connectStatus();
+  world.source = await connectBestSource(
+    (frame) => world.applyFrame(frame),
+    (s) => showStatus(s)
+  );
+
+  wireControls(stage, world);
   $("loading").classList.add("gone");
 
   // 브라우저 콘솔에서 장면을 들여다볼 수 있게 해둔다 (디버깅용)
@@ -66,173 +95,192 @@ class App {
     this.stage = stage;
     this.lot = lot;
     this.models = models;
+    this.source = null;
 
+    this.slotById = new Map(lot.slots.map((s) => [s.id, s]));
     this.palette = new Palette();
-    this.director = new DemoDirector(lot);
     this.bubbles = new BubbleLayer(stage, lot);
 
-    this.parked = new Map();    // slotId → THREE.Group
-    this.movers = [];           // 도착·출차로 움직이는 중인 차량
+    this.cars = new Map();        // 번호판 → { group, target, shown, size }
+    this.lines = new Map();       // 번호판 → { line, marker, style, revision }
+    this.slotStatus = new Map();
+    this.kpi = {};
+    this.events = [];
     this.glow = 1.0;
+    this.t = 0;
 
     this.graphGroup = buildGraphOverlay(THREE, lot);
     this.graphGroup.visible = false;
     stage.scene.add(this.graphGroup);
   }
 
-  async start() {
-    for (const { slot, plate } of this.director.seedParked(0.45)) {
-      const car = await this.makeCar(hash(slot.id));
-      placeInSlot(car, slot);
-      this.stage.scene.add(car);
-      this.parked.set(slot.id, car);
-    }
+  // ── 프레임 수신 ───────────────────────────────────────────────
+
+  applyFrame(frame) {
+    this.t = frame.t;
+    this.syncVehicles(frame.vehicles ?? []);
+    this.syncGuidance(frame.guidance ?? []);
+
+    for (const s of frame.slots ?? []) this.slotStatus.set(s.id, s.status);
+    for (const e of frame.events ?? []) this.logEvent(e);
+
+    this.kpi = frame.kpi ?? {};
     this.refreshStats();
   }
 
-  async makeCar(seed) {
-    const car = await this.models.create(pickModel(this.models.names, seed), {
-      length: 4.7, width: 1.85, color: pickBodyColor(seed),
+  /**
+   * 차량 목록을 프레임에 맞춘다.
+   *
+   * 프레임에서 사라진 번호판은 주차장을 떠난 것이다 — 화면에서도 지운다.
+   * 새로 나타난 번호판은 입구를 통과한 것이다.
+   */
+  syncVehicles(rows) {
+    const seen = new Set();
+
+    for (const row of rows) {
+      seen.add(row.id);
+      let car = this.cars.get(row.id);
+      if (!car) {
+        car = { group: null, target: null, shown: null, size: sizeOf(row.model) };
+        this.cars.set(row.id, car);
+        this.spawn(row, car);
+      }
+      car.state = row.state;
+      car.target = { x: row.pose[0], y: row.pose[1], theta: row.pose[2] };
+      if (!car.shown) car.shown = { ...car.target };
+    }
+
+    for (const [plate, car] of [...this.cars]) {
+      if (seen.has(plate)) continue;
+      if (car.group) this.stage.scene.remove(car.group);
+      this.cars.delete(plate);
+    }
+  }
+
+  async spawn(row, car) {
+    const [length, width] = car.size;
+    const group = await this.models.create(pickModel(this.models.names, hash(row.id)), {
+      length, width, color: pickBodyColor(hash(row.id)),
     });
-    car.add(buildContactShadow(THREE, 4.7, 1.85));
-    return car;
+    group.add(buildContactShadow(THREE, length, width));
+
+    // 생성이 끝나기 전에 차가 떠났을 수도 있다
+    if (!this.cars.has(row.id)) return;
+    car.group = group;
+    if (car.shown) {
+      group.position.set(car.shown.x, 0, -car.shown.y);
+      group.rotation.y = car.shown.theta;
+    }
+    this.stage.scene.add(group);
+  }
+
+  /**
+   * 유도선을 프레임에 맞춘다.
+   *
+   * 폴리라인은 **개정될 때만** 실려 온다 (자리를 빼앗겨 다시 안내받는 순간 등).
+   * 나머지 프레임은 진행률만 온다 — 그래서 trace 파일이 한 자릿수 작아진다.
+   */
+  syncGuidance(rows) {
+    const seen = new Set();
+
+    for (const row of rows) {
+      seen.add(row.id);
+      let g = this.lines.get(row.id);
+
+      if (row.polyline && (!g || g.revision !== row.revision)) {
+        const style = g?.style ?? this.palette.acquire(row.id);
+        if (g) this.disposeLine(row.id, { keepColor: true });
+        g = this.buildLine(row, style);
+      }
+      if (g) {
+        g.line.setProgress(row.progress ?? 0);
+        g.slotId = row.target;
+      }
+    }
+
+    for (const plate of [...this.lines.keys()]) {
+      if (!seen.has(plate)) this.disposeLine(plate);
+    }
+  }
+
+  buildLine(row, style) {
+    const line = new GuidanceLine(THREE, row.polyline, style.color, {
+      laneOffset: Palette.laneOffset(style.lane),
+    });
+    line.setGlow(this.glow);
+    this.stage.scene.add(line.mesh);
+
+    const slot = this.slotById.get(row.target);
+    const marker = slot ? new TargetMarker(THREE, slot, style.color) : null;
+    if (marker) this.stage.scene.add(marker.mesh);
+
+    const g = {
+      plate: row.id, style, line, marker,
+      revision: row.revision ?? 0, slotId: row.target, slot,
+    };
+    this.lines.set(row.id, g);
+    this.bubbles.show(g, this.t);
+    return g;
+  }
+
+  disposeLine(plate, { keepColor = false } = {}) {
+    const g = this.lines.get(plate);
+    if (!g) return;
+    g.line.dispose();
+    g.marker?.dispose();
+    this.stage.scene.remove(g.line.mesh);
+    if (g.marker) this.stage.scene.remove(g.marker.mesh);
+    this.lines.delete(plate);
+    this.bubbles.remove(g);
+    if (!keepColor) this.palette.release(plate);
+  }
+
+  logEvent(e) {
+    const text =
+      e.type === "slot_stolen"
+        ? `<b>자리 강탈</b> ${e.taker} 가 ${e.slot} 을 차지 — ${e.victim} 재배정`
+        : `경로 이탈 ${e.plate} (${e.node})`;
+    this.events.unshift({ t: this.t, text, kind: e.type });
+    this.events.length = Math.min(this.events.length, EVENT_LOG);
+    renderEvents(this.events);
+  }
+
+  // ── 매 화면 프레임 ────────────────────────────────────────────
+
+  update(dt) {
+    // 시뮬레이션 프레임은 초당 5~10장, 화면은 60장. 그 사이를 메운다.
+    const k = 1 - Math.exp(-SMOOTHING * dt);
+    for (const car of this.cars.values()) {
+      if (!car.group || !car.target) continue;
+      const s = car.shown;
+      s.x += (car.target.x - s.x) * k;
+      s.y += (car.target.y - s.y) * k;
+      s.theta += wrapAngle(car.target.theta - s.theta) * k;
+      car.group.position.set(s.x, 0, -s.y);
+      car.group.rotation.y = s.theta;
+    }
+
+    for (const g of this.lines.values()) {
+      g.line.update(dt);
+      g.marker?.update(dt);
+    }
+
+    this.bubbles.update(this.t);
   }
 
   setGlow(g) {
     this.glow = g;
-    for (const m of this.movers) m.line?.setGlow(g);
-  }
-
-  update(dt) {
-    const jobs = this.director.update(dt);
-    for (const job of jobs.arrivals) this.spawnArrival(job);
-    for (const job of jobs.departures) this.spawnDeparture(job);
-
-    for (const m of this.movers) this.advance(m, dt);
-
-    const before = this.movers.length;
-    this.movers = this.movers.filter((m) => !m.done);
-    if (this.movers.length !== before) this.refreshStats();
-
-    this.bubbles.update();
-  }
-
-  // ── 도착 ──────────────────────────────────────────────────────
-
-  async spawnArrival(job) {
-    const style = this.palette.acquire(job.plate);
-    const line = new GuidanceLine(THREE, job.polyline, style.color, {
-      laneOffset: Palette.laneOffset(style.lane),
-    });
-    const marker = new TargetMarker(THREE, job.slot, style.color);
-    line.setGlow(this.glow);
-    this.stage.scene.add(line.mesh, marker.mesh);
-
-    const car = await this.makeCar(job.seed);
-    this.stage.scene.add(car);
-
-    const mover = {
-      kind: "arrival",
-      plate: job.plate, slot: job.slot, style, car, line, marker,
-      track: line.track, total: line.total,
-      speed: job.speed, travelled: 0, phase: "gate", timer: 0, done: false,
-    };
-    this.movers.push(mover);
-    this.bubbles.show(mover);
-    this.place(mover, 0);
-    this.refreshStats();
-  }
-
-  /** 유도선 끝에 도착 → 후진 주차 → 그 자리를 점유한 채로 남는다. */
-  finishArrival(m) {
-    m.line.dispose();
-    m.marker.dispose();
-    this.stage.scene.remove(m.line.mesh, m.marker.mesh);
-    this.palette.release(m.plate);
-
-    placeInSlot(m.car, m.slot);
-    this.parked.set(m.slot.id, m.car);
-    this.director.notifyParked(m.plate, m.slot.id);
-    m.done = true;
-  }
-
-  // ── 출차 ──────────────────────────────────────────────────────
-
-  spawnDeparture(job) {
-    const car = this.parked.get(job.slot.id);
-    if (!car) return;
-    this.parked.delete(job.slot.id);
-
-    // 출차 차량에는 유도선을 그리지 않는다. 나가는 길은 안내가 필요 없고,
-    // 화면에 선이 늘어나면 정작 안내가 필요한 차의 선이 묻힌다.
-    const track = makeTrack(THREE, job.polyline, { height: 0.0 });
-    this.movers.push({
-      kind: "departure",
-      plate: job.plate, slot: job.slot, car, line: null, marker: null,
-      track, total: track.total,
-      speed: job.speed, travelled: 0, phase: "leaving", timer: 0, done: false,
-    });
-    this.refreshStats();
-  }
-
-  // ── 공통 진행 ─────────────────────────────────────────────────
-
-  advance(m, dt) {
-    m.line?.update(dt);
-    m.marker?.update(dt);
-
-    if (m.phase === "gate") {
-      m.timer += dt;
-      if (m.timer >= GATE_PAUSE) {
-        this.bubbles.remove(m);
-        m.phase = "driving";
-      }
-      return;
-    }
-
-    if (m.phase === "parking") {
-      // 후진 주차 중 — 궤적은 2단계 maneuver.py 가 계산하며, 뷰어에서는
-      // 3~4단계에 실제 자세를 스트림으로 받아 그린다. 지금은 시간만 흘린다.
-      m.timer += dt;
-      if (m.timer >= PARK_MANEUVER) this.finishArrival(m);
-      return;
-    }
-
-    m.travelled += m.speed * dt;
-
-    if (m.travelled >= m.total) {
-      if (m.kind === "arrival") {
-        m.phase = "parking";
-        m.timer = 0;
-        m.line.setProgress(1);
-        return;
-      }
-      // 출차 완료 — 주차장을 떠났다
-      this.stage.scene.remove(m.car);
-      m.done = true;
-      return;
-    }
-
-    this.place(m, m.travelled);
-  }
-
-  place(m, d) {
-    const { position, heading } = m.track.sample(d);
-    m.car.position.copy(position);
-    m.car.position.y = 0;
-    m.car.rotation.y = heading;
-    m.line?.setProgress(d / m.total);
+    for (const l of this.lines.values()) l.line.setGlow(g);
   }
 
   refreshStats() {
-    const d = this.director;
     const total = this.lot.slots.length;
-    const occupied = d.occupancy;
     $("s-slots").textContent = total;
-    $("s-occ").innerHTML = `${Math.round((occupied / total) * 100)}<small>%</small>`;
-    $("s-guided").textContent = this.movers.filter((m) => m.kind === "arrival").length;
-    $("s-reroute").textContent = "0";
-    renderLegend(this.movers.filter((m) => m.kind === "arrival"));
+    $("s-occ").innerHTML =
+      `${Math.round((this.kpi.occupancy ?? 0) * 100)}<small>%</small>`;
+    $("s-guided").textContent = this.lines.size;
+    $("s-reroute").textContent = this.kpi.reroutes ?? 0;
+    renderLegend([...this.lines.values()]);
   }
 }
 
@@ -258,39 +306,44 @@ class BubbleLayer {
       : new THREE.Vector3(0, 5, 0);
   }
 
-  show(m) {
-    const css = Palette.css(m.style.color);
+  show(g, t) {
+    if (!g.slot || g.bubble) return;
+    const css = Palette.css(g.style.color);
     const walk = this.gate
-      ? Math.round(Math.hypot(m.slot.center[0] - this.gate[0], m.slot.center[1] - this.gate[1]))
+      ? Math.round(Math.hypot(g.slot.center[0] - this.gate[0], g.slot.center[1] - this.gate[1]))
       : 0;
 
     const el = document.createElement("div");
     el.className = "bubble";
     el.innerHTML =
       `<div class="tag">번호판 인식</div>` +
-      `<div class="plate">${m.plate}</div>` +
+      `<div class="plate">${g.plate}</div>` +
       `<div class="msg">` +
       `<span class="swatch" style="background:${css}"></span>` +
-      `<b style="color:${css}">${m.style.name}</b>색 선을 따라가 주시기 바랍니다` +
+      `<b style="color:${css}">${g.style.name}</b>색 선을 따라가 주시기 바랍니다` +
       `</div>` +
-      `<div class="dest">배정 주차면 <b>${m.slot.id}</b> · 출입구까지 도보 <b>${walk}m</b></div>`;
+      `<div class="dest">배정 주차면 <b>${g.slot.id}</b> · 출입구까지 도보 <b>${walk}m</b></div>`;
 
     this.root.appendChild(el);
-    m.bubble = el;
-    this.active.push(m);
+    g.bubble = el;
+    g.bubbleUntil = t + BUBBLE_HOLD;
+    this.active.push(g);
   }
 
-  remove(m) {
-    if (!m.bubble) return;
-    const el = m.bubble;
+  remove(g) {
+    if (!g.bubble) return;
+    const el = g.bubble;
     el.classList.add("leaving");
     setTimeout(() => el.remove(), 360);
-    m.bubble = null;
-    this.active = this.active.filter((x) => x !== m);
+    g.bubble = null;
+    this.active = this.active.filter((x) => x !== g);
   }
 
   /** 3D 앵커 위치를 화면 좌표로 투영해 말풍선을 붙인다. */
-  update() {
+  update(t) {
+    for (const g of [...this.active]) {
+      if (t >= g.bubbleUntil) this.remove(g);
+    }
     if (!this.active.length) return;
 
     const p = this.anchor.clone().project(this.stage.camera);
@@ -299,13 +352,57 @@ class BubbleLayer {
     const y = (-p.y * 0.5 + 0.5) * innerHeight;
 
     // 여러 대가 동시에 들어오면 위로 쌓는다
-    this.active.forEach((m, i) => {
-      if (!m.bubble) return;
-      m.bubble.style.display = behind ? "none" : "block";
-      m.bubble.style.left = `${x}px`;
-      m.bubble.style.top = `${y - i * 132}px`;
+    this.active.forEach((g, i) => {
+      if (!g.bubble) return;
+      g.bubble.style.display = behind ? "none" : "block";
+      g.bubble.style.left = `${x}px`;
+      g.bubble.style.top = `${y - i * 132}px`;
     });
   }
+}
+
+// ── 화면 조각 ─────────────────────────────────────────────────────
+
+function renderLegend(lines) {
+  const box = $("legend-items");
+  box.innerHTML = "";
+  if (!lines.length) {
+    box.innerHTML = `<div class="item"><span class="slot">안내 중인 차량 없음</span></div>`;
+    return;
+  }
+  for (const g of lines) {
+    const css = Palette.css(g.style.color);
+    const el = document.createElement("div");
+    el.className = "item";
+    el.innerHTML =
+      `<span class="chip" style="background:${css}"></span>` +
+      `<span>${g.plate}</span>` +
+      `<span class="slot">${g.style.name}색 → ${g.slotId}</span>`;
+    box.appendChild(el);
+  }
+}
+
+function renderEvents(events) {
+  const box = $("event-items");
+  if (!box) return;
+  if (!events.length) {
+    box.innerHTML = `<div class="item"><span class="slot">아직 없음</span></div>`;
+    return;
+  }
+  box.innerHTML = events
+    .map(
+      (e) =>
+        `<div class="item ${e.kind}"><span class="slot">${e.t.toFixed(0)}s</span>` +
+        `<span>${e.text}</span></div>`
+    )
+    .join("");
+}
+
+function showStatus({ connected, live, text }) {
+  const el = $("conn");
+  el.classList.toggle("on", !!connected);
+  el.classList.toggle("replay", connected && !live);
+  $("conn-text").textContent = text;
 }
 
 /** 가로등 자리 — 조경섬 위에 세운다. 실제 주차장도 섬에 등을 박는다. */
@@ -326,20 +423,19 @@ function lampPositions(lot) {
   return out;
 }
 
+function sizeOf(model) {
+  return MODEL_SIZE[model] ?? DEFAULT_SIZE;
+}
+
 function pickModel(names, seed) {
   if (!names.length) return null;
   return names[Math.abs(Math.floor(seed * 7919)) % names.length];
 }
 
-function placeInSlot(car, slot) {
-  // 후진 주차이므로 차량 앞머리는 통로를 향한다. 원점이 뒷축이라 살짝 밀어 넣는다.
-  const back = 1.35;
-  car.position.set(
-    slot.center[0] - Math.cos(slot.heading) * back,
-    0,
-    -(slot.center[1] - Math.sin(slot.heading) * back)
-  );
-  car.rotation.y = slot.heading;
+function wrapAngle(a) {
+  while (a > Math.PI) a -= Math.PI * 2;
+  while (a < -Math.PI) a += Math.PI * 2;
+  return a;
 }
 
 function buildGraphOverlay(THREE, lot) {
@@ -368,28 +464,10 @@ function buildGraphOverlay(THREE, lot) {
   return g;
 }
 
-function renderLegend(arrivals) {
-  const box = $("legend-items");
-  box.innerHTML = "";
-  if (!arrivals.length) {
-    box.innerHTML = `<div class="item"><span class="slot">안내 중인 차량 없음</span></div>`;
-    return;
-  }
-  for (const m of arrivals) {
-    const css = Palette.css(m.style.color);
-    const el = document.createElement("div");
-    el.className = "item";
-    el.innerHTML =
-      `<span class="chip" style="background:${css}"></span>` +
-      `<span>${m.plate}</span>` +
-      `<span class="slot">${m.style.name}색 → ${m.slot.id}</span>`;
-    box.appendChild(el);
-  }
-}
-
 function wireControls(stage, world) {
   const seg = (id, initial, onPick) => {
     const box = $(id);
+    if (!box) return;
     const apply = (v) => {
       for (const b of box.querySelectorAll("button")) {
         b.setAttribute("aria-pressed", String(b.dataset.v === v));
@@ -412,6 +490,7 @@ function wireControls(stage, world) {
 
   seg("seg-light", "dusk", applyPreset);
   seg("seg-cam", "bird", (v) => stage.setCamera(v));
+  seg("seg-speed", "1", (v) => world.source?.setSpeed(Number(v)));
 
   glowSlider.addEventListener("input", () => {
     const g = Number(glowSlider.value) / 100;
@@ -422,30 +501,31 @@ function wireControls(stage, world) {
   $("c-graph").addEventListener("change", (e) => {
     world.graphGroup.visible = e.target.checked;
   });
-}
 
-function connectStatus() {
-  const el = $("conn");
-  const text = $("conn-text");
-  try {
-    const ws = new WebSocket(`ws://${location.host}/ws`);
-    ws.onmessage = (ev) => {
-      const msg = JSON.parse(ev.data);
-      if (msg.type === "hello") {
-        el.classList.add("on");
-        text.textContent = msg.live ? "라이브 스트리밍" : "서버 연결됨 · 시뮬레이션 대기";
-      }
+  const pause = $("btn-pause");
+  if (pause) {
+    let paused = false;
+    pause.addEventListener("click", () => {
+      paused = !paused;
+      paused ? world.source?.pause() : world.source?.resume();
+      pause.textContent = paused ? "재생" : "일시정지";
+      pause.setAttribute("aria-pressed", String(paused));
+    });
+  }
+
+  // 도착률은 라이브에서만 의미가 있다 — 녹화본은 이미 벌어진 일이다
+  const arrival = $("r-arrival");
+  if (arrival) {
+    const live = world.source?.live === true;
+    arrival.disabled = !live;
+    const show = () => {
+      $("v-arrival").textContent = `${(Number(arrival.value) / 10).toFixed(1)}대/분`;
     };
-    ws.onclose = () => {
-      el.classList.remove("on");
-      text.textContent = "서버 연결 끊김";
-    };
-    ws.onerror = () => {
-      el.classList.remove("on");
-      text.textContent = "서버에 연결할 수 없음";
-    };
-  } catch {
-    text.textContent = "서버 없음 (정적 미리보기)";
+    arrival.addEventListener("input", show);
+    arrival.addEventListener("change", () => {
+      world.source?.reset?.({ arrival_rate: Number(arrival.value) / 600 });
+    });
+    show();
   }
 }
 

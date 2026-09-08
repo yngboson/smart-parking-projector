@@ -1,4 +1,4 @@
-# 인수인계 (2026-09-09 갱신)
+# 인수인계 (2026-09-09 갱신 · 4단계까지)
 
 > **다음 세션은 이 문서 → `CLAUDE.md` → `docs/DECISIONS.md` 순서로 읽으면 됩니다.**
 > `docs/PLAN.md` 는 전체 로드맵이고, 이 문서는 "지금 어디까지 왔고 다음에 뭘 하나"입니다.
@@ -15,7 +15,7 @@
 그래서 **관제 알고리즘은 운전자의 성향(`compliance`)을 절대 볼 수 없게** 코드를
 물리적으로 분리했고, 그 경계를 테스트로 강제합니다. 이게 무너지면 연구가 무의미해집니다.
 
-**0~3단계 완료. 헤드리스 시뮬레이션이 끝까지 돕니다. 다음은 4단계(뷰어 연동).**
+**0~4단계 완료. 브라우저에서 실시간으로 돌아갑니다. 다음은 5단계(강탈 시나리오).**
 
 ---
 
@@ -34,11 +34,14 @@ start-windows.bat
 파이썬 확인 → venv → 의존성 → 도면 생성 → 서버 → 브라우저까지 자동입니다.
 
 ```bash
-pytest tests/ -v                      # 89개 통과해야 정상 (약 75초)
-python -m sim.world.simulation --duration 300 --arrival-rate 0.15
+pytest tests/ -v                                        # 100개 통과해야 정상 (약 90초)
+uvicorn server.app:app --reload                         # 브라우저 → localhost:8000
+python -m sim.world.simulation --duration 300 --arrival-rate 0.15    # 헤드리스
+python -m sim.metrics.trace_writer --duration 240 --out runs/demo    # 녹화
 ```
 
-마지막 명령이 헤드리스 시뮬레이션입니다. 3단계가 살아 있는지 30초 만에 확인할 수 있습니다.
+브라우저를 열면 **Python 시뮬레이션이 실시간으로 보낸 프레임**이 그대로 보입니다.
+서버가 없으면 뷰어가 알아서 `runs/demo` 녹화본으로 넘어갑니다 (D-005).
 
 > ⚠️ **Python 3.11 이상이 필요합니다.** macOS 기본 파이썬은 3.9 라 설치가 실패합니다.
 > `brew install python@3.14` 후 그 인터프리터로 venv 를 만드세요.
@@ -52,10 +55,10 @@ python -m sim.world.simulation --duration 300 --arrival-rate 0.15
 | 0 | Git/GitHub, 문서 4종, `.gitignore` | ✅ |
 | 1 | 공용 값 타입, 도면 생성기, **계층 경계 테스트** | ✅ |
 | 2 | 자전거 모델, Pure Pursuit, 후진 주차 | ✅ |
-| 3 | **관제 알고리즘 + 센서 + 프로젝터 + 계층 배선** | ✅ |
-| — | 웹 뷰어(바닥·유도선·말풍선·주차/출차 생애주기) | ✅ *(아직 임시 데모 데이터)* |
-| 4 | **뷰어 연동 — 다음 작업** | ⬜ |
-| 5~10 | 강탈, 복구 6종, 베이스라인, 실험, STL | ⬜ |
+| 3 | 관제 알고리즘 + 센서 + 프로젝터 + 계층 배선 | ✅ |
+| 4 | **뷰어 연동 — WebSocket 라이브 + 녹화본 재생** | ✅ |
+| 5 | **강탈 시나리오 — 다음 작업** | ⬜ |
+| 6~10 | 복구 6종, 베이스라인, 실험, STL, 발표 마감 | ⬜ |
 
 ### 3단계 실측 (시드 6개 × 1200초, 도착률 0.15/초)
 
@@ -63,6 +66,13 @@ python -m sim.world.simulation --duration 300 --arrival-rate 0.15
 주차 완료      82 ~ 100대        평균 소요      38 ~ 45초
 주행차 정지비율 4.6 ~ 9.4%        최장 정지      11 ~ 15초
 주차면 이탈    0대                센서 오탐 강탈  548건 중 1건 (0.2%)
+```
+
+### 4단계 실측
+
+```
+녹화본 크기    240초 / 초당 3.3프레임 → 1.6 MB   (좌표 cm 반올림 + 폴리라인 델타)
+라이브 스트림  초당 10프레임, 배속 0.5~8×, 일시정지·도착률 변경 지원
 ```
 
 **교착 없음.** 3단계에서 차간거리를 배선하자 시뮬레이션이 통째로 굳었고, 원인을 찾는 데
@@ -89,6 +99,7 @@ sim/world/       주차장 환경 — 계층 배선을 담당하는 유일한 �
   traffic.py     통로 합류 양보 (D-012). 교착 조사 전말이 모듈 주석에 있음
   projector.py   유도선 상태 + 진행률(지나온 구간 소거)
   simulation.py  ★ 계층 배선. 고정 timestep 루프. `python -m` 으로 실행 가능
+                 `run(duration, stride=n)` — 물리는 그대로 두고 관측만 솎아낸다
 
 sim/control/     관제 — sim.common 외에는 아무것도 import 하지 않음
   api.py         ControlSystem 프로토콜 + NullControl(무안내 베이스라인 뼈대)
@@ -106,13 +117,19 @@ sim/agents/      차량 — sim.common 외에는 아무것도 import 하지 않�
   driver.py      ★ DriverProfile(compliance) 와 주행 상태 기계. 우측통행·비집고나가기
   perception.py  운전자 시야 규칙 (반경·시야각·통로 접면)
 
+sim/metrics/
+  trace_writer.py  프레임을 runs/<run_id>/trace.jsonl 로 녹화 (발표장의 보험)
+
+server/app.py    /ws 에서 시뮬레이션을 굴려 프레임을 밀어 넣는다. 연결마다 독립 세션
+
 viewer/js/       three.js 뷰어 (빌드 스텝 없음)
-  demo.js        ⚠️ 임시 진행자 — 4단계에서 Python 스트림으로 대체하고 삭제
+  source.js      라이브(WebSocket)와 녹화본을 같은 얼굴로 감싼다. 라이브 실패 시 자동 전환
+  main.js        프레임을 받아 그리기만 한다 — 아무것도 결정하지 않는다
 
 tests/
   test_layer_isolation.py  ★ 이 저장소에서 가장 중요한 테스트
   test_traffic.py          ★ 두 번째로 중요 — 교착이 없는가
-  test_routing.py, test_control.py, test_simulation.py
+  test_routing.py, test_control.py, test_simulation.py, test_stream.py
   test_lotmap.py, test_driving.py
 ```
 
@@ -136,51 +153,41 @@ tests/
 
 ---
 
-## 다음 작업 — 4단계 (뷰어 연동)
+## 다음 작업 — 5단계 (강탈 시나리오)
 
-3단계가 이미 **뷰어와 합의된 프레임 포맷**을 만들어 냅니다. 남은 일은 배관입니다.
+**이 프로젝트가 답하려던 질문이 드디어 시작되는 단계입니다.** 지금까지는 전원이
+안내를 따르는 세계였습니다. 이제 일부가 배신합니다.
+
+배관은 이미 다 깔려 있습니다. 관제가 센서만으로 강탈을 알아채는 경로는 완성됐고
+`tests/test_control.py` 가 검증합니다. 남은 것은 **차가 실제로 이탈하게 만드는 것**뿐입니다.
 
 ### 만들 것
 
 | 파일 | 내용 |
 |---|---|
-| `server/app.py` | `/ws` 에서 `Simulation` 을 실제로 굴려 프레임을 흘려보낸다 (지금은 하트비트만) |
-| `viewer/js/source.js` | WebSocket / trace 재생을 같은 인터페이스로 감싼다 (D-005) |
-| `viewer/js/main.js` | `demo.js` 대신 스트림 프레임을 소비하도록 교체 |
-| `sim/metrics/trace_writer.py` | 프레임을 `runs/<run_id>/trace.jsonl` 로 기록 |
+| `sim/agents/driver.py` | 이탈 판단 — 눈에 보이는 빈 자리가 더 좋으면 `compliance` 확률로 그리로 간다 |
+| `sim/world/simulation.py` | `vision_enabled=True` 로 켜고, 성향 분포를 시나리오에서 받는다 |
+| `sim/scenarios/*.yaml` | 도착률·성향 분포·시드·전략 이름 |
 
 ### 이미 준비된 것 (다시 만들지 마세요)
 
-- `Simulation.run(duration)` — 매 틱 `Frame` 을 내보내는 제너레이터
-- `Frame.to_dict()` — 아래 포맷 그대로. **폴리라인 델타 압축이 이미 들어 있습니다**
-  (개정된 유도선만 `polyline` 을 싣고, 나머지는 `progress` 만)
-- 주차면 상태도 델타입니다 — **첫 프레임만 전수**, 이후엔 바뀐 것만
-- `Projector.beams()` — 지금 바닥에 떠 있는 선 전부, 진행률 포함
-- `sim.control.api.NullControl` — 무안내 베이스라인(D-010)의 뼈대
+- `DriverProfile.compliance` — 자리는 잡혀 있고 현재 전원 1.0 입니다
+- `SimConfig.vision_enabled` — 켜면 `Perception.visible_slots` 가 채워집니다.
+  배선은 끝나 있고 기본값만 꺼져 있습니다
+- `agents/perception.py` 의 `VisionModel` — 반경 25m · 시야각 · 통로 접면 규칙
+- `VisibleSlot.looks_free` — **예약 여부는 들어 있지 않습니다.** 운전자 눈에는
+  예약된 자리도 그냥 빈 자리로 보입니다. 강탈이 일어나는 근본 이유이므로
+  여기에 예약 정보를 넣지 마세요
+- 관제 쪽 전 경로: `SlotStolen` 판정 → `GuidanceReason.REROUTE` → `reroute_count`
+  → 프레임 `events` → 뷰어 이벤트 로그. 강탈이 발생하면 화면에 바로 뜹니다
 
-### 프레임 포맷 (실제 출력 그대로)
+### 이탈 판단 (docs/PLAN.md 7)
 
-```json
-{"t": 12.34,
- "vehicles": [{"id":"12가3456","pose":[x,y,theta],"state":"driving","color":3,"model":"sedan_a"}],
- "guidance": [{"id":"12가3456","color":3,"progress":0.42,"target":"C-14",
-               "polyline":[[x,y]],"revision":0}],
- "slots":    [{"id":"C-14","status":"reserved"}],
- "events":   [{"type":"slot_stolen","victim":"…","taker":"…","slot":"C-14"}],
- "kpi":      {"occupancy":0.62,"avg_park_time":41.2,"reroutes":3,
-              "active":8,"parked_total":57,"stolen":0,"forced_merges":12}}
-```
+발견한 빈 슬롯이 (a) 목적지보다 남은 주행거리를 D 이상 줄이고 (b) 도보거리도
+나쁘지 않으면 → `compliance` 에 따른 확률로 이탈해 그 자리를 차지합니다.
 
-- `pose` 는 **차체 중심** 기준입니다 (뒷축이 아님). 뷰어의 폴백 박스가 중심 정렬이라
-  그렇게 맞췄습니다. STL 이 뒷축 원점이면 `models.json` 의 `pivot: "rear_axle"` 로 흡수합니다.
-- `state` 는 `waiting / driving / parking / parked / leaving` 다섯 가지입니다.
-
-### 같이 삭제할 것
-
-- `viewer/js/demo.js` 통째로 — **관제 알고리즘이 아닙니다.** 화면이 움직이는지 보려고
-  만든 최소 진행 로직입니다.
-- `main.js` 의 `PARK_MANEUVER = 4.0` — 후진 주차를 4초 타이머로 때우고 있습니다.
-  이제 실제 자세가 스트림으로 들어옵니다.
+> ⚠️ **먼저 미해결 이슈 2번(센서 오탐)을 0 으로 만드세요.** 강탈 횟수가 이 연구의
+> 핵심 지표인데 바닥 노이즈가 0.2% 섞여 있으면 결과를 방어하기 어렵습니다.
 
 ---
 

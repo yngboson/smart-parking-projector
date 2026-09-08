@@ -68,6 +68,17 @@
     background: var(--warn); box-shadow: 0 0 8px var(--warn);
   }
   #conn.on .dot { background: #4ade80; box-shadow: 0 0 8px #4ade80; }
+  #conn.replay .dot { background: #e0b138; box-shadow: 0 0 8px #e0b138; }
+  #legend .events { flex-direction: column; align-items: stretch; gap: 5px; }
+  #legend .events .item { gap: 8px; line-height: 1.45; }
+  #legend .events .slot_stolen { color: #ffb4a8; }
+  button.wide {
+    width: 100%; padding: 7px 0; border-radius: 7px; cursor: pointer;
+    background: #1c2230; color: var(--text); border: 1px solid #2b3446;
+    font: inherit; font-size: 12px;
+  }
+  button.wide[aria-pressed="true"] { background: #2b3446; }
+  .note { margin: 5px 0 0; font-size: 10.5px; color: var(--muted); line-height: 1.5; }
 
   /* ── 우상단: 컨트롤 ── */
   #controls { top: 16px; right: 16px; width: 216px; padding: 14px 16px; }
@@ -226,16 +237,42 @@
         <input type="checkbox" id="c-graph" /> 통로 그래프 표시
       </label>
     </div>
+
+    <h2 style="margin-top:14px">재생</h2>
+
+    <div class="field">
+      <label>배속</label>
+      <div class="seg" id="seg-speed">
+        <button data-v="0.5">0.5×</button>
+        <button data-v="1">1×</button>
+        <button data-v="2">2×</button>
+        <button data-v="4">4×</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <button id="btn-pause" class="wide">일시정지</button>
+    </div>
+
+    <div class="field">
+      <label>도착률 <span id="v-arrival" style="color:var(--text)"></span></label>
+      <input type="range" id="r-arrival" min="10" max="200" step="10" value="90" />
+      <p class="note">바꾸면 라이브 시뮬레이션이 처음부터 다시 시작합니다. 녹화본에서는 잠깁니다.</p>
+    </div>
   </section>
 
   <section class="panel" id="legend">
     <h2>안내 중인 차량</h2>
     <div class="items" id="legend-items"></div>
+    <h2 style="margin-top:12px">이벤트</h2>
+    <div class="items events" id="event-items">
+      <div class="item"><span class="slot">아직 없음</span></div>
+    </div>
   </section>
 
   <div id="hint">
     <kbd>드래그</kbd> 회전 · <kbd>휠</kbd> 확대 · <kbd>우클릭 드래그</kbd> 이동<br />
-    현재는 도면 미리보기입니다 — 차량과 유도선은 예시 데이터입니다
+    화면의 모든 차량과 유도선은 Python 시뮬레이션이 실시간으로 보낸 결과입니다
   </div>
 
   <div id="bubbles"></div>

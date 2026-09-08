@@ -1,0 +1,25 @@
+{
+ "layout": "mid_grid_120",
+ "config": {
+  "dt": 0.1,
+  "seed": 0,
+  "arrival_rate": 0.15,
+  "dwell_mean": 150.0,
+  "dwell_min": 30.0,
+  "max_guided": 20,
+  "entry_clearance": 9.0,
+  "slot_sensor_mode": "anpr",
+  "vision_enabled": false
+ },
+ "frames": 800,
+ "duration": 239.8,
+ "kpi": {
+  "occupancy": 0.1167,
+  "avg_park_time": 37.95,
+  "reroutes": 0,
+  "active": 22,
+  "parked_total": 27,
+  "stolen": 0,
+  "forced_merges": 33
+ }
+}

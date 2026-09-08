@@ -40,9 +40,14 @@ Thumbs.db
 desktop.ini
 
 # ── 대용량 산출물 ──
-runs/
+# 디렉터리 자체가 아니라 '내용'을 제외해야 아래 예외가 먹는다.
+# git 은 제외된 디렉터리 안으로 내려가지 않으므로 `runs/` 로 막으면
+# `!runs/demo/trace.jsonl` 이 무시된다.
+runs/*
 !runs/demo/
+runs/demo/*
 !runs/demo/trace.jsonl
+!runs/demo/meta.json
 *.mp4
 *.mov
 

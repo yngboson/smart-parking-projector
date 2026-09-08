@@ -67,22 +67,30 @@ grep -rn "compliance" sim/control/       # 결과가 비어 있어야 정상
 
 ## 실행
 
+Python 3.11 이상이 필요합니다.
+
 ```bash
-pip install -e .
+pip install -e ".[dev]"
 
 # 라이브 시뮬레이션 뷰어
 uvicorn server.app:app --reload            # → http://localhost:8000
 
-# 배치 실험 (전략 비교)
-python -m sim.experiments.run_matrix --scenario sim/scenarios/rush_hour.yaml --seeds 30
-python -m sim.experiments.report runs/<run_id>
+# 헤드리스 실행 (KPI만 확인)
+python -m sim.world.simulation --duration 300 --arrival-rate 0.15
+
+# 발표용 녹화본 만들기
+python -m sim.metrics.trace_writer --duration 240 --out runs/demo
 
 # 테스트
 pytest tests/ -v
 ```
 
-뷰어는 **라이브 스트리밍**(WebSocket, 도착률·비협조 확률을 슬라이더로 조작)과
+뷰어는 **라이브 스트리밍**(WebSocket, 배속·일시정지·도착률 조작)과
 **녹화본 재생**(`trace.jsonl`)을 모두 지원하며 화면은 동일합니다.
+서버에 연결하지 못하면 자동으로 녹화본으로 넘어갑니다.
+
+> 전략 비교 배치 실험(`sim.experiments.run_matrix`)은 8단계에서 만듭니다.
+> 지금 어디까지 왔는지는 [`docs/HANDOFF.md`](docs/HANDOFF.md) 를 보세요.
 
 ---
 

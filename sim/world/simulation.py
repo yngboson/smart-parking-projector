@@ -179,17 +179,26 @@ class Simulation:
         self._park_times: list[float] = []
         self._sent_revision: dict[PlateId, int] = {}
         self._sent_status: dict[SlotId, str] = {}
+        self._pending: list = []
+        """아직 발행하지 않은 추론 사건들. 프레임을 솎아내도 잃지 않는다."""
+
         self._stolen = 0
 
     # ── 루프 ──────────────────────────────────────────────────────
 
-    def run(self, duration: float) -> Iterator[Frame]:
-        """duration 초 동안 돌리며 매 틱의 프레임을 내보낸다."""
-        steps = int(round(duration / self.config.dt))
-        for _ in range(steps):
-            yield self.step()
+    def run(self, duration: float, stride: int = 1) -> Iterator[Frame]:
+        """duration 초 동안 돌리며 프레임을 내보낸다.
 
-    def step(self) -> Frame:
+        :param stride: 몇 틱마다 한 프레임을 발행할 것인가. 물리는 언제나 dt 간격으로
+            푼다 — 솎아내는 것은 **관측**뿐이다. 녹화본 크기를 줄일 때 쓴다.
+        """
+        steps = int(round(duration / self.config.dt))
+        for i in range(steps):
+            frame = self.step(publish=(i % max(1, stride) == 0))
+            if frame is not None:
+                yield frame
+
+    def step(self, publish: bool = True) -> Frame | None:
         dt = self.config.dt
         self.t += dt
 
@@ -210,8 +219,10 @@ class Simulation:
             self.projector.advance(v.plate, v.state.pose.position)
             self._update_schedule(v)
 
+        # 사건은 프레임을 건너뛰어도 잃으면 안 된다. 발행할 때 한꺼번에 내보낸다.
+        self._pending.extend(getattr(self.control, "inferences", []))
         self._retire()
-        return self._frame(events)
+        return self._frame() if publish else None
 
     # ── 지각 ──────────────────────────────────────────────────────
 
@@ -355,7 +366,7 @@ class Simulation:
 
     # ── 프레임 ────────────────────────────────────────────────────
 
-    def _frame(self, events) -> Frame:
+    def _frame(self) -> Frame:
         return Frame(
             t=self.t,
             vehicles=[self._vehicle_row(v) for v in self.vehicles],
@@ -369,7 +380,9 @@ class Simulation:
         pose = v.body_pose
         return {
             "id": v.plate,
-            "pose": [round(pose.x, 3), round(pose.y, 3), round(pose.theta, 4)],
+            # cm 단위면 충분하다. 뷰어는 프레임 사이를 보간하므로 mm 를 보내봐야
+            # 화면에 차이가 없고, trace 파일만 커진다.
+            "pose": [round(pose.x, 2), round(pose.y, 2), round(pose.theta, 3)],
             "state": _VIEW_STATE[v.driver.phase],
             "color": v.color,
             "model": v.model,
@@ -416,7 +429,7 @@ class Simulation:
 
     def _event_rows(self) -> list[dict]:
         rows: list[dict] = []
-        for inf in getattr(self.control, "inferences", []):
+        for inf in self._pending:
             if isinstance(inf, SlotStolen):
                 self._stolen += 1
                 rows.append(
@@ -431,6 +444,7 @@ class Simulation:
                 rows.append(
                     {"type": "route_deviation", "plate": inf.plate, "node": inf.at_node}
                 )
+        self._pending.clear()
         return rows
 
     def _kpi(self) -> dict:
