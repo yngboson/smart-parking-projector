@@ -1,0 +1,16 @@
+# 다른 머신/세션이 이어받으므로 줄바꿈을 LF 로 통일한다.
+* text=auto eol=lf
+
+*.py   text eol=lf
+*.js   text eol=lf
+*.html text eol=lf
+*.md   text eol=lf
+*.json text eol=lf
+*.yaml text eol=lf
+*.yml  text eol=lf
+
+# 바이너리
+*.stl  binary
+*.png  binary
+*.jpg  binary
+*.mp4  binary
