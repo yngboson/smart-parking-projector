@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>주차 유도 시뮬레이터</title>
+
+<!-- three.js 는 저장소에 함께 넣어두었다. 발표장에서 인터넷이 없어도 돌아가야 한다. -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "/vendor/three.module.min.js",
+    "three/addons/OrbitControls.js": "/vendor/OrbitControls.js",
+    "three/addons/STLLoader.js": "/vendor/STLLoader.js"
+  }
+}
+</script>
+
+<style>
+  :root {
+    --bg: #0b0d10;
+    --panel: rgba(18, 21, 26, 0.86);
+    --panel-line: rgba(255, 255, 255, 0.09);
+    --text: #e8ecf1;
+    --muted: #8b95a3;
+    --accent: #63b3ff;
+    --warn: #ff9f45;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); }
+  body {
+    font-family: "Pretendard", "Malgun Gothic", -apple-system, BlinkMacSystemFont,
+                 "Segoe UI", system-ui, sans-serif;
+    overflow: hidden;
+  }
+  #stage { position: fixed; inset: 0; }
+  canvas { display: block; }
+
+  .panel {
+    position: fixed;
+    background: var(--panel);
+    border: 1px solid var(--panel-line);
+    border-radius: 12px;
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  }
+
+  /* ── 좌상단: 타이틀 + 상태 ── */
+  #hud { top: 16px; left: 16px; width: 268px; padding: 14px 16px; }
+  #hud h1 { margin: 0 0 2px; font-size: 15px; letter-spacing: -0.2px; }
+  #hud .sub { margin: 0 0 12px; font-size: 11.5px; color: var(--muted); }
+  .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .stat {
+    background: rgba(255, 255, 255, 0.045);
+    border-radius: 8px; padding: 8px 10px;
+  }
+  .stat .k { font-size: 10.5px; color: var(--muted); }
+  .stat .v { font-size: 17px; font-variant-numeric: tabular-nums; margin-top: 1px; }
+  .stat .v small { font-size: 11px; color: var(--muted); font-weight: 400; }
+
+  #conn {
+    margin-top: 11px; font-size: 11px; color: var(--muted);
+    display: flex; align-items: center; gap: 6px;
+  }
+  #conn .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--warn); box-shadow: 0 0 8px var(--warn);
+  }
+  #conn.on .dot { background: #4ade80; box-shadow: 0 0 8px #4ade80; }
+
+  /* ── 우상단: 컨트롤 ── */
+  #controls { top: 16px; right: 16px; width: 216px; padding: 14px 16px; }
+  #controls h2 {
+    margin: 0 0 10px; font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.9px; color: var(--muted); font-weight: 600;
+  }
+  .field { margin-bottom: 13px; }
+  .field:last-child { margin-bottom: 0; }
+  .field > label {
+    display: block; font-size: 11.5px; color: var(--muted); margin-bottom: 6px;
+  }
+  .seg { display: flex; gap: 4px; }
+  .seg button {
+    flex: 1; padding: 6px 0; font-size: 11.5px; cursor: pointer;
+    color: var(--text); background: rgba(255, 255, 255, 0.05);
+    border: 1px solid transparent; border-radius: 7px;
+    font-family: inherit; transition: background 0.12s, border-color 0.12s;
+  }
+  .seg button:hover { background: rgba(255, 255, 255, 0.1); }
+  .seg button[aria-pressed="true"] {
+    background: rgba(99, 179, 255, 0.19); border-color: rgba(99, 179, 255, 0.5);
+    color: #cfe6ff;
+  }
+  input[type="range"] { width: 100%; accent-color: var(--accent); }
+  .toggle { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+  .toggle input { accent-color: var(--accent); }
+
+  /* ── 하단: 안내 중인 차량 범례 ── */
+  #legend {
+    bottom: 16px; left: 16px; padding: 11px 14px; max-width: min(720px, calc(100vw - 32px));
+  }
+  #legend h2 {
+    margin: 0 0 9px; font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.9px; color: var(--muted); font-weight: 600;
+  }
+  #legend .items { display: flex; flex-wrap: wrap; gap: 7px 14px; }
+  #legend .item { display: flex; align-items: center; gap: 7px; font-size: 12px; }
+  #legend .chip {
+    width: 22px; height: 9px; border-radius: 3px;
+    box-shadow: 0 0 10px currentColor;
+  }
+  #legend .slot { color: var(--muted); font-size: 11px; }
+
+  /* ── 우하단: 안내 문구 ── */
+  #hint {
+    position: fixed; bottom: 18px; right: 18px;
+    font-size: 11px; color: var(--muted); text-align: right; line-height: 1.7;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8); pointer-events: none;
+  }
+  kbd {
+    background: rgba(255, 255, 255, 0.1); border-radius: 4px;
+    padding: 1px 5px; font-family: inherit; font-size: 10.5px;
+  }
+
+  #loading {
+    position: fixed; inset: 0; display: grid; place-items: center;
+    background: var(--bg); font-size: 13px; color: var(--muted);
+    transition: opacity 0.4s; z-index: 10;
+  }
+  #loading.gone { opacity: 0; pointer-events: none; }
+  #err {
+    position: fixed; inset: auto 16px 16px 16px; padding: 14px 16px;
+    background: #3b1418; border: 1px solid #7f2b32; border-radius: 10px;
+    font-size: 12px; white-space: pre-wrap; display: none; z-index: 20;
+  }
+</style>
+</head>
+<body>
+  <div id="stage"></div>
+
+  <section class="panel" id="hud">
+    <h1>주차 유도 시뮬레이터</h1>
+    <p class="sub" id="lot-name">도면 불러오는 중…</p>
+    <div class="stat-grid">
+      <div class="stat"><div class="k">주차면</div><div class="v" id="s-slots">–</div></div>
+      <div class="stat"><div class="k">점유율</div><div class="v" id="s-occ">–</div></div>
+      <div class="stat"><div class="k">안내 중</div><div class="v" id="s-guided">–</div></div>
+      <div class="stat"><div class="k">재탐색</div><div class="v" id="s-reroute">–</div></div>
+    </div>
+    <div id="conn"><span class="dot"></span><span id="conn-text">연결 확인 중…</span></div>
+  </section>
+
+  <section class="panel" id="controls">
+    <h2>화면</h2>
+
+    <div class="field">
+      <label>조명</label>
+      <div class="seg" id="seg-light">
+        <button data-v="day">주간</button>
+        <button data-v="dusk">황혼</button>
+        <button data-v="night">야간</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>시점</label>
+      <div class="seg" id="seg-cam">
+        <button data-v="top">탑다운</button>
+        <button data-v="bird">조감</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>유도선 밝기 <span id="v-glow" style="color:var(--text)"></span></label>
+      <input type="range" id="r-glow" min="0" max="200" value="100" />
+    </div>
+
+    <div class="field">
+      <label class="toggle">
+        <input type="checkbox" id="c-graph" /> 통로 그래프 표시
+      </label>
+    </div>
+  </section>
+
+  <section class="panel" id="legend">
+    <h2>안내 중인 차량</h2>
+    <div class="items" id="legend-items"></div>
+  </section>
+
+  <div id="hint">
+    <kbd>드래그</kbd> 회전 · <kbd>휠</kbd> 확대 · <kbd>우클릭 드래그</kbd> 이동<br />
+    현재는 도면 미리보기입니다 — 차량과 유도선은 예시 데이터입니다
+  </div>
+
+  <div id="loading">주차장을 짓는 중…</div>
+  <pre id="err"></pre>
+
+  <script type="module">
+    import { boot } from "/js/main.js";
+    boot().catch((e) => {
+      console.error(e);
+      const el = document.getElementById("err");
+      el.style.display = "block";
+      el.textContent = "실행 오류\n\n" + (e && e.stack ? e.stack : e);
+      document.getElementById("loading").classList.add("gone");
+    });
+  </script>
+</body>
+</html>
