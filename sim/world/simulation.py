@@ -166,6 +166,14 @@ class WorldVehicle:
     세워둔 차는 이 값이 그대로이므로, 주차면 조회 같은 결과를 다시 계산할 이유가 없다.
     """
 
+    odometer: float = 0.0
+    """이 차가 주차장 안에서 실제로 굴러간 거리(m).
+
+    "안내가 있을 때와 없을 때 얼마나 더 달리는가"가 이 연구의 비교 지표 중
+    하나다 (docs/PLAN.md 8절). 계획 경로 길이로는 답이 안 된다 — 이탈하거나
+    헤매면 계획과 실제가 달라지고, 그 차이가 바로 재려는 값이다.
+    """
+
     def refresh(self) -> None:
         """차체 기하를 다시 잰다. 물리를 적분한 직후 한 번만 부른다.
 
@@ -173,7 +181,10 @@ class WorldVehicle:
         다시 계산해서 차량 하나당 다섯 번씩 삼각함수를 돌렸다 — 프로파일에서
         `body_center` 호출이 27만 번이었고, 그게 가장 무거운 항목이었다.
         """
-        self.center = body_center(self.state.pose, self.spec)
+        centre = body_center(self.state.pose, self.spec)
+        if self.version:
+            self.odometer += self.center.distance_to(centre)
+        self.center = centre
         self.shape = footprint(self.state.pose, self.spec)
         self.version += 1
 
@@ -279,6 +290,9 @@ class Simulation:
 
         # ① 센서가 세상을 관측한다 → ② 관제가 판단한다 → ③ 프로젝터에 반영한다
         events = self.sensors.observe(self.t, self.vehicles)
+        tick = getattr(self.control, "tick", None)
+        if tick is not None:
+            tick(self.t)         # 이벤트가 없는 틱에도 관제의 시계는 간다 (D-025)
         commands = self.control.on_events(events)
         self.projector.apply(commands, self.t)
 

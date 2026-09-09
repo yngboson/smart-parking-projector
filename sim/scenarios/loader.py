@@ -41,22 +41,29 @@ class Scenario:
         """이 시나리오를 주어진 시드로 돌릴 설정."""
         return replace(self.config, seed=seed)
 
-    def build_control(self, lot, recovery: str | None = None):
+    def build_control(
+        self, lot, recovery: str | None = None, allocator: str | None = None
+    ):
         """이 시나리오가 지정한 전략으로 관제를 만든다.
 
-        :param recovery: 시나리오의 복구 전략을 덮어쓴다. 전략 비교 실험이
-            **같은 시나리오 위에서 전략만** 바꿔 돌리기 위한 통로다.
+        :param recovery: 시나리오의 복구 전략을 덮어쓴다.
+        :param allocator: 시나리오의 할당 전략을 덮어쓴다.
+
+        둘 다 실험 매트릭스가 **같은 시나리오 위에서 전략만** 바꿔 돌리기 위한
+        통로다. 시나리오를 복제해 전략만 다른 YAML 을 여섯 개 만드는 순간,
+        도착률 하나를 고치려면 여섯 곳을 고쳐야 하고 반드시 하나를 빠뜨린다.
         """
         from sim.control.api import NullControl
         from sim.control.system import ProjectorControl
 
-        if self.allocator == "none":
+        name = allocator or self.allocator
+        if name == "none":
             # 무안내 베이스라인 (D-010). 관제를 갈아끼우는 것만으로 모드가 바뀐다.
             return NullControl()
 
         return ProjectorControl(
             lot,
-            allocator=self.allocator,
+            allocator=name,
             recovery=recovery or self.recovery,
             slot_sensor_mode=self.config.slot_sensor_mode,
         )

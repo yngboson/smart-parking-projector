@@ -29,6 +29,20 @@ class ControlSystem(Protocol):
         """
         ...
 
+    def tick(self, t: float) -> None:
+        """현재 시각을 알린다. 매 틱 `on_events` 직전에 불린다.
+
+        **왜 필요한가.** 관제의 시계를 센서 이벤트의 타임스탬프로만 맞추고 있었더니,
+        이벤트가 하나도 없는 틱에서는 시각이 멈췄다. 그러면 "N초 뒤에 다시 시도"
+        같은 판단이 영원히 오지 않는다 — 자리를 못 받은 차가 입구에 서 있으면
+        이벤트를 만들 차도 없으므로 스스로를 가둔다. 실제로 첫 안내까지 평균
+        69.6초가 걸린 실행이 있었다 (D-025).
+
+        실제 관제 장비도 이벤트에만 깨어나지 않는다. 자기 루프와 시계가 있다.
+        시각은 관측이 아니므로 계층 분리와 무관하다.
+        """
+        ...
+
 
 class NullControl:
     """아무 안내도 하지 않는 관제 — 베이스라인(무안내 모드, D-010)의 뼈대.
@@ -42,3 +56,6 @@ class NullControl:
 
     def on_events(self, events: Sequence[SensorEvent]) -> list[ProjectorCommand]:
         return []
+
+    def tick(self, t: float) -> None:
+        return None

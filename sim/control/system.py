@@ -18,7 +18,7 @@ from __future__ import annotations
 from typing import Sequence
 
 from sim.common.geometry import Vec2, offset_polyline
-from sim.common.ids import PlateId, SlotId
+from sim.common.ids import NodeId, PlateId, SlotId
 from sim.common.lotmap import LotMap
 from sim.common.messages import (
     ClearGuidance,
@@ -39,10 +39,18 @@ from sim.control.routing import LaneRouter, Route, TurnCost
 from sim.control.state import ControlState, VehicleBelief
 
 RETRY_INTERVAL = 2.0
-"""자리를 못 받은 차량을 다시 시도하기까지의 간격(초).
+"""**만차라서** 자리를 못 받은 차량을 다시 시도하기까지의 간격(초).
 
 만차일 때 매 틱 120면을 재평가하는 것은 낭비다. 실제 관제도 이벤트가 있을 때
 다시 계산하지 매 프레임 전수조사하지 않는다.
+"""
+
+RETRY_SOON = 0.4
+"""**전략이 미룬** 차량을 다시 시도하기까지의 간격(초).
+
+만차와 구별해야 한다. 자리가 있는데 전략이 판단을 미룬 것이라면 곧 다시 물어야
+하고, 자리가 없어서 못 준 것이라면 서두를 이유가 없다. 둘을 같은 간격으로 묶으면
+전략이 의도한 타이밍이 만차 대기에 묻힌다.
 """
 
 
@@ -89,7 +97,15 @@ class ProjectorControl:
         self._pending_reason: dict[PlateId, GuidanceReason] = {}
         self._retry_at: dict[PlateId, float] = {}
 
+        self._provisional: dict[PlateId, SlotId] = {}
+        """아직 확정되지 않은 배정 (`zone_late_binding`). 차량이 목표 구역의
+        통로에 들어서면 다시 물어본다."""
+
     # ── ControlSystem ─────────────────────────────────────────────
+
+    def tick(self, t: float) -> None:
+        """관제의 시계를 맞춘다 (D-025). 센서 이벤트가 없는 틱에도 시간은 간다."""
+        self.state.t = max(self.state.t, t)
 
     def on_events(self, events: Sequence[SensorEvent]) -> list[ProjectorCommand]:
         inferences = self.state.apply(list(events))
@@ -191,12 +207,10 @@ class ProjectorControl:
         for e in events:
             if isinstance(e, SlotOccupancyChanged) and e.occupied and e.plate is not None:
                 out.append(ClearGuidance(plate=e.plate))
-                self._retry_at.pop(e.plate, None)
-                self._pending_reason.pop(e.plate, None)
+                self._forget(e.plate)
             elif isinstance(e, VehicleExited):
                 out.append(ClearGuidance(plate=e.plate))
-                self._retry_at.pop(e.plate, None)
-                self._pending_reason.pop(e.plate, None)
+                self._forget(e.plate)
         return out
 
     def _note_reasons(self, inferences: Sequence[ControlInference]) -> None:
@@ -219,13 +233,14 @@ class ProjectorControl:
 
     def _assign(self) -> list[ProjectorCommand]:
         waiting = [v for v in self.state.awaiting_assignment() if self._is_due(v)]
+        waiting += [v for v in self._arrived_in_zone() if self._is_due(v)]
         if not waiting:
             return []
 
         # 예비석은 평시 배정에서 뺀다. 사고가 났을 때 즉시 투입하려고 남긴 자리다.
         available = [s for s in self.state.available_slots() if s not in self._withheld]
         if not available:
-            self._defer(waiting)
+            self._defer(waiting, RETRY_INTERVAL)     # 만차 — 급할 것 없다
             return []
 
         requests = [self._request(v) for v in waiting]
@@ -241,9 +256,41 @@ class ProjectorControl:
 
         assignments = self.allocator.allocate(requests, ctx)
         placed = {a.plate for a in assignments}
-        self._defer([v for v in waiting if v.plate not in placed])
+        # 자리는 있는데 전략이 안 준 것이다 — 곧 다시 묻는다.
+        self._defer([v for v in waiting if v.plate not in placed], RETRY_SOON)
 
         return [self._commit(a) for a in assignments]
+
+    def _arrived_in_zone(self) -> list[VehicleBelief]:
+        """잠정 배정을 받은 차량 중 목표 구역의 통로에 들어선 것들.
+
+        통로 검지기가 "이 번호판이 이 노드를 지났다"를 알려주므로, 그 노드가 목표
+        주차면의 통로와 같은지만 보면 된다 — 실제 하드웨어로도 할 수 있는 판단이다.
+
+        **한 번 올라오면 잠정 표시를 뗀다.** 자리를 새로 못 받더라도(구역이 다 찼다)
+        매 틱 다시 묻지 않기 위해서다. 늦은 확정의 기회는 한 번이다.
+        """
+        out: list[VehicleBelief] = []
+        for plate, slot_id in list(self._provisional.items()):
+            v = self.state.vehicles.get(plate)
+            if v is None or v.exited or v.parked_slot is not None:
+                del self._provisional[plate]
+                continue
+            if v.target_slot != slot_id:
+                del self._provisional[plate]     # 그새 재할당됐다
+                continue
+            if v.last_node is None:
+                continue
+            if self._same_aisle(v.last_node, self.lot.slots[slot_id].access_node):
+                del self._provisional[plate]
+                out.append(v)
+        return out
+
+    def _same_aisle(self, a: NodeId, b: NodeId) -> bool:
+        nodes = self.lot.nodes
+        if a not in nodes or b not in nodes:
+            return False
+        return nodes[a].aisle == nodes[b].aisle
 
     def _request(self, v: VehicleBelief) -> alloc_api.AllocationRequest:
         reason = self._pending_reason.get(v.plate, GuidanceReason.INITIAL)
@@ -255,6 +302,7 @@ class ProjectorControl:
             arrived_from=v.prev_node,
             t=self.state.t,
             reason=reason,
+            held_slot=v.target_slot,
         )
 
     def _commit(self, a: alloc_api.Assignment) -> GuidanceCommand:
@@ -267,6 +315,10 @@ class ProjectorControl:
 
         self.state.reserve(a.plate, a.slot_id, a.route)
         self._retry_at.pop(a.plate, None)
+        if a.provisional:
+            self._provisional[a.plate] = a.slot_id
+        else:
+            self._provisional.pop(a.plate, None)
 
         return GuidanceCommand(
             plate=a.plate,
@@ -276,12 +328,17 @@ class ProjectorControl:
             revision=v.revision,
         )
 
+    def _forget(self, plate: PlateId) -> None:
+        self._retry_at.pop(plate, None)
+        self._pending_reason.pop(plate, None)
+        self._provisional.pop(plate, None)
+
     def _is_due(self, v: VehicleBelief) -> bool:
         return self.state.t >= self._retry_at.get(v.plate, 0.0)
 
-    def _defer(self, vehicles: Sequence[VehicleBelief]) -> None:
+    def _defer(self, vehicles: Sequence[VehicleBelief], delay: float) -> None:
         for v in vehicles:
-            self._retry_at[v.plate] = self.state.t + RETRY_INTERVAL
+            self._retry_at[v.plate] = self.state.t + delay
 
     # ── 조회 ──────────────────────────────────────────────────────
 

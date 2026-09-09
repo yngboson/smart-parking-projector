@@ -5,9 +5,8 @@
 (CLAUDE.md '전략을 추가하는 방법').
 
 **왜 한 대씩이 아니라 목록으로 받는가.** `greedy_nearest` 는 한 대씩 처리해도
-되지만 `hungarian_batch` 는 짧은 시간창에 도착한 차량들을 **묶어서** 최적 매칭해야
-한다. 인터페이스를 한 대짜리로 만들면 그 전략을 나중에 끼워 넣을 수 없다.
-그래서 처음부터 배치로 둔다.
+되지만 `hungarian_batch` 는 여러 대를 **함께** 놓고 최적 매칭해야 한다. 인터페이스를
+한 대짜리로 만들면 그 전략을 나중에 끼워 넣을 수 없다. 그래서 처음부터 배치로 둔다.
 
 전략은 상태를 갖지 않는 편이 좋다. 같은 시드로 재현되어야 실험이 성립한다.
 """
@@ -43,6 +42,12 @@ class AllocationRequest:
     t: float = 0.0
     reason: GuidanceReason = GuidanceReason.INITIAL
 
+    held_slot: SlotId | None = None
+    """지금 잠정 배정받아 들고 있는 자리. 처음 받는 차량이면 None.
+
+    `zone_late_binding` 이 "구역만 정한 상태"와 "자리를 확정할 때"를 구분하는 데 쓴다.
+    """
+
 
 @dataclass(frozen=True, slots=True)
 class Assignment:
@@ -52,6 +57,17 @@ class Assignment:
     slot_id: SlotId
     route: Route
     cost: float
+
+    provisional: bool = False
+    """아직 확정이 아니다 — 차량이 그 구역에 들어오면 다시 물어봐 달라.
+
+    `zone_late_binding` 을 위한 것이다. 입구에서 최종 자리를 확정하지 않고 구역만
+    정해 두면, 예약과 도착 사이의 틈이 짧아져 강탈에 원천적으로 강해진다
+    (docs/PLAN.md 4절). 이 표시가 없으면 그 전략을 프로토콜 안에서 표현할 수 없다.
+
+    관제 본체는 이 표시가 붙은 차량이 목표 구역의 통로에 들어선 것을 보면
+    (통로 검지기로 알 수 있다) 그 차량을 다시 배정 대상에 올린다.
+    """
 
 
 class AllocationContext:
@@ -159,4 +175,9 @@ def available_names() -> list[str]:
 
 
 def _load_builtin() -> None:
-    from sim.control.allocators import greedy_nearest  # noqa: F401
+    from sim.control.allocators import (  # noqa: F401
+        congestion_aware,
+        greedy_nearest,
+        hungarian_batch,
+        zone_late_binding,
+    )
