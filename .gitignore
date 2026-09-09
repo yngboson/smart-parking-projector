@@ -48,6 +48,17 @@ runs/*
 runs/demo/*
 !runs/demo/trace.jsonl
 !runs/demo/meta.json
+
+# 발표에 쓰는 실험 결과는 저장소에 남긴다 — 표의 숫자가 어느 실행에서 나왔는지
+# 추적할 수 있어야 발표에서 방어할 수 있다.
+#
+# **번호판별 보상 원장(ledger/)은 넣지 않는다.** 한 판에 1.4MB 이고 매트릭스마다
+# 수십 판이라 저장소가 금방 무거워진다. 코드가 그대로 있으므로 같은 시드로 다시
+# 돌리면 글자 그대로 같은 원장이 나온다 (tests/test_experiments.py 가 강제).
+!runs/compare-baseline/
+!runs/recovery-matrix/
+!runs/allocator-matrix/
+runs/*/ledger/
 *.mp4
 *.mov
 
