@@ -1,0 +1,947 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<title>주차 배정 알고리즘 — 공부 로드맵</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+KR:wght@400;600;700&family=Noto+Sans+Mono:wght@400;600&display=swap" rel="stylesheet" />
+<style>
+  @page { size: A4; margin: 20mm 18mm 20mm 18mm; }
+
+  :root {
+    --ink: #1a1a1a;
+    --soft: #4a4a4a;
+    --faint: #767676;
+    --rule: #d8d4cc;
+    --paper: #ffffff;
+    --accent: #7a2e2e;
+    --box: #f7f5f1;
+    --code: #f3f1ec;
+  }
+
+  * { box-sizing: border-box; }
+
+  html { font-size: 10.5pt; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "Noto Serif KR", "Nanum Myeongjo", "Batang", "AppleMyungjo",
+                 "Times New Roman", serif;
+    line-height: 1.72;
+    text-align: justify;
+    word-break: keep-all;
+    overflow-wrap: break-word;
+  }
+
+  /* ── 표지 ───────────────────────────────────────────── */
+  .cover {
+    padding-top: 62mm;
+    text-align: left;
+    page-break-after: always;
+    break-after: page;
+  }
+  .cover .kicker {
+    font-size: 10pt; letter-spacing: 0.28em; color: var(--faint);
+    text-transform: uppercase; margin-bottom: 14mm;
+  }
+  .cover h1 {
+    font-size: 30pt; font-weight: 700; line-height: 1.32;
+    margin: 0 0 6mm; letter-spacing: -0.01em;
+    /* 전역 h1 은 장마다 쪽을 넘기지만, 표지 제목은 그러면 안 된다 */
+    page-break-before: auto; break-before: auto;
+    border-bottom: 0; padding-bottom: 0;
+  }
+  .cover .sub {
+    font-size: 13pt; color: var(--soft); font-weight: 400;
+    line-height: 1.6; margin: 0 0 16mm; max-width: 118mm;
+  }
+  .cover hr { border: 0; border-top: 1px solid var(--rule); margin: 0 0 8mm; }
+  .cover .meta { font-size: 9.5pt; color: var(--faint); line-height: 1.9; }
+  .cover .meta b { color: var(--soft); font-weight: 600; }
+
+  /* ── 목차 ───────────────────────────────────────────── */
+  .toc { page-break-after: always; break-after: page; }
+  .toc h2 { border: 0; margin-bottom: 8mm; }
+  .toc ol { list-style: none; padding: 0; margin: 0; counter-reset: sec; }
+  .toc > ol > li {
+    counter-increment: sec;
+    padding: 2.6mm 0;
+    border-bottom: 1px dotted var(--rule);
+    font-size: 11pt;
+  }
+  .toc > ol > li::before {
+    content: counter(sec) ".";
+    display: inline-block; width: 9mm; color: var(--accent); font-weight: 600;
+  }
+  .toc .note { display: block; margin-left: 9mm; font-size: 9pt; color: var(--faint); }
+
+  /* ── 표제 ───────────────────────────────────────────── */
+  h1 {
+    font-size: 19pt; font-weight: 700; line-height: 1.35;
+    margin: 0 0 3mm; padding-bottom: 3mm;
+    border-bottom: 2px solid var(--ink);
+    page-break-before: always; page-break-after: avoid;
+  }
+  h1 .n { color: var(--accent); margin-right: 3mm; }
+  h1 + .lede {
+    font-size: 10.5pt; color: var(--soft); margin: 0 0 7mm;
+    font-style: italic;
+  }
+  h2 {
+    font-size: 13pt; font-weight: 700; margin: 9mm 0 3mm;
+    padding-bottom: 1.6mm; border-bottom: 1px solid var(--rule);
+    page-break-after: avoid;
+  }
+  h3 {
+    font-size: 11pt; font-weight: 600; margin: 6mm 0 2mm;
+    page-break-after: avoid;
+  }
+  p { margin: 0 0 3.4mm; }
+  ul, ol { margin: 0 0 3.6mm; padding-left: 6.5mm; }
+  li { margin-bottom: 1.5mm; }
+  strong { font-weight: 700; }
+  em { font-style: italic; color: var(--soft); }
+
+  /* ── 분야 카드 ──────────────────────────────────────── */
+  .field {
+    border: 1px solid var(--rule);
+    border-left: 3.5pt solid var(--accent);
+    padding: 5mm 6mm 4mm;
+    margin: 0 0 6mm;
+    page-break-inside: avoid;
+    background: #fdfcfa;
+  }
+  .field h3 { margin-top: 0; font-size: 12pt; }
+  .field .one {
+    font-size: 10.5pt; color: var(--accent); font-weight: 600;
+    margin: -1mm 0 3.5mm; font-style: italic;
+  }
+  .field dl { margin: 0; }
+  .field dt {
+    font-size: 8.5pt; letter-spacing: 0.14em; color: var(--faint);
+    font-weight: 600; margin-top: 3.2mm; text-transform: uppercase;
+  }
+  /* 인라인 코드가 섞인 줄은 양쪽정렬하면 공백이 벌어진다 */
+  .field dd { margin: 0.6mm 0 0; font-size: 10pt; }
+  .field dd:has(code) { text-align: left; }
+  .field dd ul { margin: 0.6mm 0 0; padding-left: 5mm; }
+
+  /* ── 상자 ───────────────────────────────────────────── */
+  .box {
+    background: var(--box); border: 1px solid var(--rule);
+    padding: 4mm 5mm; margin: 0 0 5mm; page-break-inside: avoid;
+  }
+  .box .label {
+    font-size: 8.5pt; letter-spacing: 0.16em; color: var(--accent);
+    font-weight: 700; text-transform: uppercase; margin-bottom: 2mm;
+  }
+  .box p:last-child, .box ul:last-child { margin-bottom: 0; }
+
+  .ask {
+    border-left: 3pt solid #2e5a7a; background: #f4f7fa;
+    padding: 3.4mm 5mm; margin: 3mm 0 0;
+  }
+  .ask .label { color: #2e5a7a; }
+  .ask ol { margin: 0; padding-left: 5mm; font-size: 9.8pt; }
+
+  /* ── 수식 ───────────────────────────────────────────── */
+  .eq {
+    font-family: "Noto Sans Mono", "Cambria Math", "Consolas", monospace;
+    background: #fbfaf7; border: 1px solid var(--rule);
+    padding: 3.4mm 5mm; margin: 3mm 0 4mm;
+    font-size: 9.6pt; line-height: 1.85; text-align: left;
+    white-space: pre; overflow-x: auto; page-break-inside: avoid;
+  }
+  .eq .c { color: var(--faint); }
+  var { font-style: italic; font-family: "Cambria Math", serif; }
+
+  code {
+    font-family: "Noto Sans Mono", "Consolas", monospace;
+    font-size: 0.88em; background: var(--code);
+    padding: 0.3mm 1.1mm; border-radius: 1.5px;
+  }
+  pre {
+    font-family: "Noto Sans Mono", "Consolas", monospace;
+    background: #fbfaf7; border: 1px solid var(--rule);
+    padding: 3.4mm 4.5mm; font-size: 8.6pt; line-height: 1.6;
+    overflow-x: auto; margin: 0 0 4mm; text-align: left;
+    page-break-inside: avoid; white-space: pre;
+  }
+  pre .c { color: #8a7f6d; }
+
+  /* ── 표 ─────────────────────────────────────────────── */
+  table {
+    width: 100%; border-collapse: collapse; margin: 0 0 5mm;
+    font-size: 9.6pt; page-break-inside: avoid;
+  }
+  th {
+    text-align: left; font-weight: 700; font-size: 8.8pt;
+    letter-spacing: 0.06em; color: var(--soft);
+    border-bottom: 1.4pt solid var(--ink); padding: 2mm 2.4mm;
+  }
+  td { padding: 2mm 2.4mm; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr:last-child td { border-bottom: 1px solid var(--ink); }
+
+  .free { color: #2d6a4f; font-weight: 600; font-size: 8.6pt; }
+
+  figure { margin: 0 0 5mm; page-break-inside: avoid; }
+  figcaption {
+    font-size: 8.8pt; color: var(--faint); margin-top: 1.8mm;
+    text-align: center; font-style: italic;
+  }
+  .end {
+    margin-top: 9mm; padding-top: 4mm; border-top: 1px solid var(--rule);
+    font-size: 9pt; color: var(--faint); text-align: center;
+  }
+</style>
+</head>
+<body>
+
+<!-- ══════════════════ 표지 ══════════════════ -->
+<section class="cover">
+  <div class="kicker">Study Guide</div>
+  <h1>주차 배정 알고리즘<br />공부 로드맵</h1>
+  <p class="sub">
+    벡터 하나만 알고 시작해서, 교수님과 대화가 되는 지점까지.<br />
+    무엇을 어떤 순서로 공부해야 하는지, 그리고 우리 주차장이
+    수학적으로 정확히 무엇인지.
+  </p>
+  <hr />
+  <div class="meta">
+    <b>프로젝트</b> &nbsp; 빔 프로젝터 주차 유도 시스템 개념검증<br />
+    <b>대상 도면</b> &nbsp; 주차면 120면 · 통로 노드 71개 · 방향성 간선 80개 · 130 × 97.5 m<br />
+    <b>함께 보는 파일</b> &nbsp; <code>parking_topology.py</code> (단독 실행, 의존성 없음)<br />
+    <b>작성</b> &nbsp; 2026-09-09
+  </div>
+</section>
+
+<!-- ══════════════════ 목차 ══════════════════ -->
+<section class="toc">
+  <h2>차례</h2>
+  <ol>
+    <li>이 문서의 사용법
+      <span class="note">지금 아는 것에서 출발하는 법. 읽는 순서.</span></li>
+    <li>큰 그림 — 주차 배정은 무슨 문제인가
+      <span class="note">한 문장의 질문이 네 개의 수학 분야에 걸쳐 있다.</span></li>
+    <li>선수 지식 점검
+      <span class="note">벡터를 아는 상태에서 더 필요한 다섯 가지.</span></li>
+    <li>분야별 공부 가이드
+      <span class="note">그래프 · 조합최적화 · 온라인 · 확률/큐잉 · 교통류 · MDP</span></li>
+    <li>우리 주차장의 수학적 표현
+      <span class="note">실제 숫자와 수식. 붙여 넣고 돌릴 수 있는 코드.</span></li>
+    <li>교수님께 가져갈 질문지
+      <span class="note">무엇을 보여드리고 무엇을 여쭐 것인가.</span></li>
+    <li>4주 학습 계획과 자료 목록
+      <span class="note">무료 자료 우선.</span></li>
+  </ol>
+</section>
+
+<!-- ══════════════════ 1 ══════════════════ -->
+<h1><span class="n">1</span>이 문서의 사용법</h1>
+<p class="lede">모르는 것이 많은 게 문제가 아니라, 무엇을 모르는지 모르는 게 문제입니다. 이 문서는 그 지도를 그립니다.</p>
+
+<h2>이 문서가 가정하는 출발점</h2>
+<p>
+  벡터의 덧셈과 크기, 내적 정도를 안다고 가정합니다. 그거면 충분합니다.
+  아래에서 다루는 모든 분야는 결국 <strong>“점들 사이의 거리를 재고, 그 거리를
+  합쳐서 최소로 만드는 방법”</strong>이며, 벡터는 그 첫 걸음이기 때문입니다.
+</p>
+
+<div class="box">
+  <div class="label">먼저 알아둘 것</div>
+  <p>
+    이 분야를 전부 마스터할 필요는 <strong>없습니다.</strong> 목표는
+    “교수님이 하시는 말씀을 알아듣고, 우리 문제가 어느 칸에 들어가는지 짚고,
+    다음에 무엇을 읽어야 할지 스스로 정할 수 있는 상태”입니다.
+    각 분야마다 <em>최소한 이것만</em> 절을 두었으니 그것부터 보세요.
+  </p>
+</div>
+
+<h2>읽는 순서</h2>
+<table>
+  <tr><th style="width:22mm">상황</th><th>이렇게 읽으세요</th></tr>
+  <tr><td>시간이 하루</td>
+      <td>2장(큰 그림) → 4장의 <em>한 문장 요약</em>만 훑기 → 6장(질문지)</td></tr>
+  <tr><td>일주일</td>
+      <td>2 → 3 → 4.1(그래프) → 4.2(배정) → 5장 코드 돌려보기 → 6</td></tr>
+  <tr><td>한 달</td>
+      <td>7장의 계획표대로</td></tr>
+</table>
+
+<h2>같이 있는 파일</h2>
+<p>
+  <code>parking_topology.py</code> 는 <strong>이 파일 하나만으로 돌아갑니다.</strong>
+  외부 라이브러리도, 나머지 프로젝트도 필요 없습니다. 우리 주차장의 실제
+  도면 데이터가 안에 들어 있고, 그래프 표현 · 최단경로 · 비용 행렬 · 배정
+  알고리즘 두 가지 · 혼잡 측정을 차례로 보여줍니다.
+</p>
+<pre>python parking_topology.py</pre>
+<p>
+  교수님께 보여드릴 때 이 파일을 함께 열어 두시면 대화가 훨씬 구체적이 됩니다.
+  “저희 주차장이 이렇게 생겼고, 지금 이렇게 풀고 있습니다” 를 한 화면에
+  보여드릴 수 있습니다.
+</p>
+
+<!-- ══════════════════ 2 ══════════════════ -->
+<h1><span class="n">2</span>큰 그림 — 주차 배정은 무슨 문제인가</h1>
+<p class="lede">“누구에게 어느 자리를 줄 것인가.” 이 한 문장이 네 개의 서로 다른 수학 분야에 걸쳐 있습니다.</p>
+
+<figure>
+<svg viewBox="0 0 620 300" width="100%" xmlns="http://www.w3.org/2000/svg"
+     font-family="Noto Serif KR, serif">
+  <defs>
+    <marker id="ar" markerWidth="9" markerHeight="9" refX="7" refY="3"
+            orient="auto"><path d="M0,0 L7,3 L0,6 z" fill="#7a2e2e"/></marker>
+  </defs>
+
+  <rect x="8" y="10" width="604" height="46" fill="#f7f5f1" stroke="#d8d4cc"/>
+  <text x="310" y="31" text-anchor="middle" font-size="14" font-weight="700">
+    “차량 i 에게 주차면 j 를 줄 것인가?”</text>
+  <text x="310" y="47" text-anchor="middle" font-size="11" fill="#767676">
+    이 결정 하나를 제대로 하려면 아래 네 층이 모두 필요합니다</text>
+
+  <line x1="310" y1="56" x2="310" y2="74" stroke="#7a2e2e" marker-end="url(#ar)"/>
+
+  <g font-size="11.5">
+    <rect x="8" y="80" width="146" height="96" fill="#fff" stroke="#7a2e2e" stroke-width="1.6"/>
+    <text x="18" y="100" font-weight="700" font-size="12">① 공간</text>
+    <text x="18" y="119" fill="#4a4a4a">주차장을 어떻게</text>
+    <text x="18" y="134" fill="#4a4a4a">표현하나?</text>
+    <text x="18" y="157" fill="#7a2e2e" font-size="11" font-weight="600">그래프 이론</text>
+    <text x="18" y="171" fill="#767676" font-size="10">최단경로</text>
+
+    <rect x="161" y="80" width="146" height="96" fill="#fff" stroke="#7a2e2e" stroke-width="1.6"/>
+    <text x="171" y="100" font-weight="700" font-size="12">② 배분</text>
+    <text x="171" y="119" fill="#4a4a4a">누구에게 무엇을</text>
+    <text x="171" y="134" fill="#4a4a4a">줄 것인가?</text>
+    <text x="171" y="157" fill="#7a2e2e" font-size="11" font-weight="600">조합 최적화</text>
+    <text x="171" y="171" fill="#767676" font-size="10">배정 문제 · 흐름</text>
+
+    <rect x="314" y="80" width="146" height="96" fill="#fff" stroke="#7a2e2e" stroke-width="1.6"/>
+    <text x="324" y="100" font-weight="700" font-size="12">③ 시간</text>
+    <text x="324" y="119" fill="#4a4a4a">미래를 모르는데</text>
+    <text x="324" y="134" fill="#4a4a4a">지금 정해야 한다</text>
+    <text x="324" y="157" fill="#7a2e2e" font-size="11" font-weight="600">온라인 알고리즘</text>
+    <text x="324" y="171" fill="#767676" font-size="10">확률 · MDP</text>
+
+    <rect x="466" y="80" width="146" height="96" fill="#fff" stroke="#7a2e2e" stroke-width="1.6"/>
+    <text x="476" y="100" font-weight="700" font-size="12">④ 상호작용</text>
+    <text x="476" y="119" fill="#4a4a4a">차들이 서로를</text>
+    <text x="476" y="134" fill="#4a4a4a">방해한다</text>
+    <text x="476" y="157" fill="#7a2e2e" font-size="11" font-weight="600">큐잉 · 교통류</text>
+    <text x="476" y="171" fill="#767676" font-size="10">혼잡 · 균형</text>
+  </g>
+
+  <rect x="8" y="196" width="604" height="44" fill="#f4f7fa" stroke="#2e5a7a"/>
+  <text x="18" y="215" font-size="11.5" font-weight="700" fill="#2e5a7a">
+    지금 우리 프로젝트가 서 있는 자리</text>
+  <text x="18" y="232" font-size="11" fill="#4a4a4a">
+    ①②는 구현했고 ③은 걸쳐 있으며 ④는 거의 손대지 못했습니다. 그런데 “혼잡이 줄어드는가”는 ④의 질문입니다.</text>
+
+  <rect x="8" y="252" width="604" height="40" fill="#fff" stroke="#d8d4cc" stroke-dasharray="3 3"/>
+  <text x="18" y="270" font-size="11" fill="#4a4a4a">
+    네 층은 <tspan font-weight="700">따로 배울 수 있지만 따로 쓸 수는 없습니다.</tspan> 배정(②)을 바꾸면 경로가 바뀌고,</text>
+  <text x="18" y="285" font-size="11" fill="#4a4a4a">
+    경로가 바뀌면 통로 부하(④)가 바뀝니다. <tspan font-style="italic">배정 알고리즘은 사실 교통 배분 알고리즘이기도 합니다.</tspan></text>
+</svg>
+<figcaption>주차 배정 문제의 네 층. 아래로 갈수록 우리가 덜 다뤄 본 영역입니다.</figcaption>
+</figure>
+
+<h2>왜 “가까운 자리를 주면 끝” 이 아닌가</h2>
+<p>
+  직관적으로는 빈 자리 중 제일 가까운 곳을 주면 될 것 같습니다. 실제로 우리의
+  첫 알고리즘이 그것이었습니다. 그런데 곧 세 가지 문제가 드러납니다.
+</p>
+<ul>
+  <li><strong>“가깝다”가 두 개입니다.</strong> 차로 가까운 자리와 건물에서 가까운
+      자리가 다릅니다. 우리 도면에서 실제로 그렇습니다 — 주행 최단은 <code>F-01</code>,
+      비용 최소는 <code>A-10</code> 으로 갈립니다.</li>
+  <li><strong>지금 최선이 나중에 손해입니다.</strong> 좋은 자리를 일찍 소진하면
+      나중에 온 차량이 멀리 가야 하고, 그 이동이 통로 혼잡이 됩니다.</li>
+  <li><strong>모두에게 좋은 자리를 주면 그 길이 막힙니다.</strong> 개인 최적의
+      합이 전체 최적이 아닙니다. 이게 4장 마지막에 나오는 <em>무정부의 대가</em>입니다.</li>
+</ul>
+
+<!-- ══════════════════ 3 ══════════════════ -->
+<h1><span class="n">3</span>선수 지식 점검</h1>
+<p class="lede">벡터를 아는 상태에서, 4장을 읽으려면 다섯 가지가 더 필요합니다. 각각 하루면 충분합니다.</p>
+
+<table>
+  <tr>
+    <th style="width:34mm">필요한 것</th>
+    <th style="width:52mm">최소한 이 정도</th>
+    <th>모르면 어디서 막히나</th>
+  </tr>
+  <tr>
+    <td><strong>집합과 표기</strong></td>
+    <td>∈, ⊆, |A|, Σ, argmin, s.t.</td>
+    <td>최적화 문제 정의를 읽을 수 없습니다. 4.2의 수식이 전부 이 표기입니다.</td>
+  </tr>
+  <tr>
+    <td><strong>행렬</strong></td>
+    <td>곱셈, 전치, 항등행렬. 벡터를 알면 반걸음입니다.</td>
+    <td>인접 행렬, 비용 행렬을 다룰 수 없습니다. 5장이 안 읽힙니다.</td>
+  </tr>
+  <tr>
+    <td><strong>확률 기초</strong></td>
+    <td>확률변수, 기댓값 E[X], 분산, 독립</td>
+    <td>도착이 무작위라는 사실을 모형에 넣을 수 없습니다. 4.4가 전부 막힙니다.</td>
+  </tr>
+  <tr>
+    <td><strong>점화식과 재귀</strong></td>
+    <td>f(n) = f(n−1) + … 형태를 세우고 푸는 것</td>
+    <td>동적계획법, 벨만 방정식(4.6)이 안 보입니다.</td>
+  </tr>
+  <tr>
+    <td><strong>빅오 표기</strong></td>
+    <td>O(n), O(n log n), O(n³) 의 뜻과 대소 비교</td>
+    <td>“이 알고리즘은 쓸 수 있나”를 판단할 수 없습니다.</td>
+  </tr>
+</table>
+
+<div class="box">
+  <div class="label">가장 먼저 할 일</div>
+  <p>
+    <strong>표기법부터 익히세요.</strong> 수학이 어려운 게 아니라 표기가 낯설어서
+    못 읽는 경우가 대부분입니다. 아래 식을 소리 내어 읽을 수 있으면 3장은
+    통과입니다.
+  </p>
+  <div class="eq">min<sub>x</sub>  Σ<sub>i∈I</sub> Σ<sub>j∈J</sub>  c<sub>ij</sub> · x<sub>ij</sub>
+                                  <span class="c">← 목적함수</span>
+s.t.  Σ<sub>j</sub> x<sub>ij</sub> = 1   (모든 i ∈ I)   <span class="c">← 제약</span>
+      Σ<sub>i</sub> x<sub>ij</sub> ≤ 1   (모든 j ∈ J)
+      x<sub>ij</sub> ∈ {0, 1}</div>
+  <p style="margin-bottom:0">
+    “집합 <var>I</var> 의 각 원소 <var>i</var> 에 대해 <var>x</var><sub>ij</sub> 를
+    <var>j</var> 에 대해 모두 더하면 1이 되도록 하면서, 비용의 총합을 최소로
+    만드는 <var>x</var> 를 찾아라.” — 우리말로 옮기면
+    <strong>“차량마다 자리를 정확히 하나씩 주되, 자리는 겹치지 않게, 총비용은 최소로.”</strong>
+  </p>
+</div>
+
+<!-- ══════════════════ 4 ══════════════════ -->
+<h1><span class="n">4</span>분야별 공부 가이드</h1>
+<p class="lede">여섯 분야. 각각 “왜 필요한가 → 최소한 이것만 → 우리 코드 어디에 → 교수님께 여쭐 것” 순서입니다.</p>
+
+<!-- 4.1 -->
+<div class="field">
+  <h3>4.1 그래프 이론과 최단경로</h3>
+  <p class="one">주차장을 “점과 화살표”로 바꾸면 거리 문제가 계산 가능한 문제가 된다.</p>
+  <dl>
+    <dt>왜 필요한가</dt>
+    <dd>
+      주차장은 평면이지만 차는 아무 데나 갈 수 없습니다. 통로를 따라, 일방통행
+      방향으로만 갑니다. 이 제약을 담는 자료구조가 <strong>방향 그래프</strong>이고,
+      “여기서 저기까지 얼마나 머냐”가 <strong>최단경로 문제</strong>입니다.
+      우리 도면은 노드 71개, 방향성 간선 80개입니다.
+    </dd>
+
+    <dt>최소한 이것만</dt>
+    <dd>
+      <ul>
+        <li><var>G</var> = (<var>V</var>, <var>E</var>) 표기, 방향/무방향, 가중치</li>
+        <li>인접 리스트 vs 인접 행렬 — 언제 무엇을 쓰나</li>
+        <li>BFS · DFS (탐색), <strong>다익스트라</strong> (가중 최단경로, O(<var>E</var> log <var>V</var>))</li>
+        <li>A* — 다익스트라에 “목적지 방향” 힌트를 준 것</li>
+        <li>강연결성 — 일방통행 때문에 “갈 수는 있는데 못 돌아오는” 구역이 생기나?</li>
+      </ul>
+    </dd>
+
+    <dt>우리 코드 어디에</dt>
+    <dd>
+      <code>sim/common/lotmap.py</code> 의 <code>successors()</code>, <code>shortest_path()</code> /
+      <code>sim/control/routing.py</code> (회전 페널티가 붙은 A*) /
+      동봉한 <code>parking_topology.py</code> 의 1~2절
+    </dd>
+
+    <dt>교재</dt>
+    <dd>
+      Kleinberg &amp; Tardos, <em>Algorithm Design</em> 4장 (가장 읽기 쉽습니다) ·
+      CLRS <em>Introduction to Algorithms</em> 22~24장 (표준 참고서)
+    </dd>
+  </dl>
+  <div class="ask">
+    <div class="label">교수님께</div>
+    <ol>
+      <li>회전에 비용을 매기려면 그래프를 어떻게 바꿔야 합니까? (간선을 노드로
+        바꾸는 확장이 정석이라고 들었는데, 노드가 80개로 늘어도 괜찮습니까?)</li>
+      <li>일방통행 격자에서 “강연결”을 보장하는 배치 조건이 알려져 있습니까?</li>
+    </ol>
+  </div>
+</div>
+
+<!-- 4.2 -->
+<div class="field">
+  <h3>4.2 조합 최적화 — 배정 문제</h3>
+  <p class="one">“누구에게 무엇을 줄까”의 정답을 다항시간에 찾을 수 있다. 단, 비용이 더하기로 표현될 때만.</p>
+  <dl>
+    <dt>왜 필요한가</dt>
+    <dd>
+      이것이 <strong>우리 문제의 심장</strong>입니다. 차량 집합과 빈 자리 집합
+      사이의 <strong>이분 그래프 매칭</strong>이고, 비용을 최소화하는 매칭을
+      찾는 것이 <strong>배정 문제(assignment problem)</strong>입니다.
+      헝가리안 알고리즘이 O(<var>n</var>³) 에 최적을 보장합니다.
+    </dd>
+
+    <dt>최소한 이것만</dt>
+    <dd>
+      <ul>
+        <li>이분 그래프, 매칭, 최대 매칭 / 최소비용 완전 매칭</li>
+        <li><strong>헝가리안 알고리즘</strong> — 원리는 나중에라도 “최적을 보장한다”는 사실은 지금</li>
+        <li>선형계획(LP)과 <strong>쌍대성(duality)</strong> — 왜 최적인지의 근거</li>
+        <li><strong>완전 유니모듈러성</strong> — 0/1 정수 문제인데 왜 실수로 풀어도 정수해가 나오나</li>
+        <li><strong>최소비용 흐름(min-cost flow)</strong> — 배정의 일반화. 간선에 <em>용량</em>을 줄 수 있다</li>
+      </ul>
+    </dd>
+
+    <dt>우리 코드 어디에</dt>
+    <dd>
+      <code>sim/control/cost.py</code> (비용 함수) ·
+      <code>sim/control/allocators/</code> (전략 4종) ·
+      <code>parking_topology.py</code> 의 3~4절 (헝가리안 구현 포함)
+    </dd>
+
+    <dt>교재</dt>
+    <dd>
+      Papadimitriou &amp; Steiglitz, <em>Combinatorial Optimization</em> (Dover 판이 저렴) ·
+      Ahuja · Magnanti · Orlin, <em>Network Flows</em> (흐름 문제의 표준서)
+    </dd>
+  </dl>
+  <div class="ask">
+    <div class="label">교수님께</div>
+    <ol>
+      <li>배정 문제의 제약행렬이 완전 유니모듈러라 LP 완화로도 정수해가 나온다고
+        들었습니다. 저희가 혼잡 항을 <strong>비선형</strong>으로 바꾸면 그 성질이
+        깨질 텐데, 그때도 쓸 수 있는 방법이 있습니까?</li>
+      <li>배정 문제를 최소비용 흐름으로 두고 통로 간선에 <strong>용량</strong>을 주면
+        혼잡을 자연스럽게 다룰 수 있을 것 같은데, 이 방향이 맞습니까?</li>
+    </ol>
+  </div>
+</div>
+
+<!-- 4.3 -->
+<div class="field">
+  <h3>4.3 온라인 알고리즘</h3>
+  <p class="one">차는 한꺼번에 오지 않는다. 미래를 모르는 채 지금 정해야 하고, 그 손해를 수치로 잴 수 있다.</p>
+  <dl>
+    <dt>왜 필요한가</dt>
+    <dd>
+      4.2는 “모든 차량을 동시에 안다”고 가정합니다. 현실은 아닙니다. 차량은
+      하나씩 도착하고 배정은 되돌릴 수 없습니다. 이걸 다루는 분야가
+      <strong>온라인 알고리즘</strong>이고, “미래를 알았다면 얼마나 잘했을까”와
+      비교한 비율이 <strong>경쟁비(competitive ratio)</strong>입니다.
+    </dd>
+    <dd>
+      <div class="eq">경쟁비 = <span style="border-bottom:1px solid #1a1a1a">온라인 알고리즘의 비용</span>
+         최적(사후에 전부 알고 푼) 비용</div>
+      우리 프로젝트에서 실제로 확인된 사실: 배치로 묶으려 했던
+      <code>hungarian_batch</code> 는 <strong>배치가 한 번도 만들어지지 않아</strong>
+      탐욕법과 같은 답을 냈습니다. 입구 대기가 뒷차 진입을 막기 때문입니다.
+      <em>온라인이라는 성질은 피할 수 있는 게 아니라 문제의 일부였습니다.</em>
+    </dd>
+
+    <dt>최소한 이것만</dt>
+    <dd>
+      <ul>
+        <li>경쟁비의 정의, 최악 경우 분석</li>
+        <li>온라인 이분 매칭: 탐욕법은 <strong>1/2</strong>, RANKING 알고리즘은 <strong>1 − 1/e ≈ 0.632</strong> (최적)</li>
+        <li>가중치가 붙으면 일반적으로 상수 경쟁비가 불가능하다는 사실</li>
+      </ul>
+    </dd>
+
+    <dt>우리 코드 어디에</dt>
+    <dd><code>sim/control/allocators/greedy_nearest.py</code> · <code>docs/DECISIONS.md</code> D-027</dd>
+
+    <dt>교재</dt>
+    <dd>
+      Borodin &amp; El-Yaniv, <em>Online Computation and Competitive Analysis</em> ·
+      Karp · Vazirani · Vazirani (1990) 원논문은 짧고 유명합니다
+    </dd>
+  </dl>
+  <div class="ask">
+    <div class="label">교수님께</div>
+    <ol>
+      <li>저희는 도착 분포를 <strong>알고 있습니다</strong>(시뮬레이터니까요).
+        분포를 아는 온라인 문제에서 최악 경우 경쟁비 말고 <em>기대값</em> 기준으로
+        성능을 보장하는 틀이 있습니까?</li>
+    </ol>
+  </div>
+</div>
+
+<!-- 4.4 -->
+<div class="field">
+  <h3>4.4 확률과정과 큐잉이론</h3>
+  <p class="one">주차장은 “서버가 120개인 대기 시스템”이다. 혼잡을 재려면 이 언어가 필요하다.</p>
+  <dl>
+    <dt>왜 필요한가</dt>
+    <dd>
+      우리가 궁극적으로 묻는 것은 <strong>“혼잡이 줄어드는가”</strong>입니다.
+      혼잡은 개별 차량의 성질이 아니라 <strong>계 전체의 성질</strong>이고,
+      계를 다루는 언어가 큐잉이론입니다. 주차면 120개가 서버, 도착률이 λ,
+      주차 후 머무는 시간이 서비스 시간입니다.
+    </dd>
+
+    <dt>최소한 이것만</dt>
+    <dd>
+      <ul>
+        <li><strong>포아송 과정</strong>과 지수분포, 무기억성 — 왜 도착을 이걸로 모형화하나</li>
+        <li><strong>리틀의 법칙</strong> <var>L</var> = λ<var>W</var> — 계 안의 평균 인원 = 도착률 × 평균 체류시간.
+            <em>증명이 거의 필요 없을 만큼 일반적이고, 그래서 강력합니다.</em></li>
+        <li>M/M/c 대기 시스템, 그리고 대기실이 유한한 M/M/c/K</li>
+        <li>이용률 ρ = λ/(cμ) 와 <strong>포화</strong>: ρ → 1 일 때 대기가 폭발한다</li>
+      </ul>
+    </dd>
+
+    <dt>우리 데이터에 바로 적용해 보면</dt>
+    <dd>
+      <div class="eq"><span class="c">busy 시나리오, λ = 0.20 대/초, 900초 (제공 부하 180대)</span>
+
+무안내 : 118.2대 처리  →  λ<sub>eff</sub> = 0.131,  W = 53.7 s  →  <b>L = 7.05 대</b>
+안내   : 179.0대 처리  →  λ<sub>eff</sub> = 0.199,  W = 28.4 s  →  <b>L = 5.65 대</b></div>
+      통로에서 돌아다니는 차가 평균 7.05대에서 5.65대로 줄었습니다. 더 중요한 것은
+      <strong>무안내는 180대 중 118대만 처리했다</strong>는 사실입니다 — 이미 용량 밖입니다.
+      안내는 179대를 처리했으니 아직 여유가 있습니다.
+    </dd>
+
+    <dt>교재</dt>
+    <dd>
+      Sheldon Ross, <em>Introduction to Probability Models</em> (포아송·큐잉 표준서) ·
+      한국어 자료로는 “확률과정” 또는 “대기행렬이론” 강의노트
+    </dd>
+  </dl>
+  <div class="ask">
+    <div class="label">교수님께</div>
+    <ol>
+      <li>주차장을 M/M/c/K 로 근사하면 <var>c</var> 와 <var>K</var> 는 각각 무엇으로
+        두어야 합니까? 주차면 수가 <var>c</var> 인 것 같은데, 통로를 도는 시간은
+        서비스인가요 대기인가요?</li>
+      <li>이 근사가 <strong>깨지는 지점</strong>은 어디입니까? 저희는 차들이 서로를
+        물리적으로 막는데, 표준 큐잉 모형에는 그런 상호작용이 없습니다.</li>
+    </ol>
+  </div>
+</div>
+
+<!-- 4.5 -->
+<div class="field">
+  <h3>4.5 교통류 이론과 네트워크 균형</h3>
+  <p class="one">이 시스템의 정체는 “안내판”이 아니라 사회적 최적을 실행 가능하게 만드는 장치다.</p>
+  <dl>
+    <dt>왜 필요한가</dt>
+    <dd>
+      혼잡을 정면으로 다루는 분야입니다. 그리고 여기서 <strong>이 프로젝트의
+      가장 강한 논지</strong>가 나옵니다 — 아래 <em>균형</em> 항목을 보세요.
+    </dd>
+
+    <dt>최소한 이것만</dt>
+    <dd>
+      <ul>
+        <li><strong>기본 관계식</strong> <var>q</var> = <var>k</var> · <var>v</var>
+            (유량 = 밀도 × 속도) 와 <strong>기본도</strong>: 밀도가 늘면 속도가 줄고,
+            어느 지점을 넘으면 유량마저 줄어든다 → 그 꼭짓점이 <strong>용량</strong></li>
+        <li><strong>BPR 함수</strong> — 혼잡을 비선형으로 값매기는 표준 방식
+            <div class="eq" style="margin:2mm 0">t<sub>e</sub>(x) = t<sub>e</sub><sup>0</sup> · [ 1 + α (x / u<sub>e</sub>)<sup>β</sup> ]     <span class="c">보통 α = 0.15, β = 4</span></div>
+            핵심은 <var>u</var><sub>e</sub>, 즉 <strong>용량</strong>입니다. 부하가 용량에
+            가까워지면 비용이 폭발합니다. 지금 우리 비용 함수에는 용량 개념이 없습니다.</li>
+        <li><strong>Wardrop 균형</strong> — 이 분야의 핵심 개념
+          <table style="margin:2mm 0 1mm">
+            <tr><th style="width:28mm">사용자 최적 (UE)</th><td>각자 자기 비용만 최소화한다. <strong>= 우리의 무안내 베이스라인</strong></td></tr>
+            <tr><th>사회적 최적 (SO)</th><td>전체 비용의 합을 최소화한다. <strong>= 유도선 안내</strong></td></tr>
+          </table>
+          둘의 비율이 <strong>무정부의 대가(Price of Anarchy)</strong>입니다.</li>
+        <li>브라에스의 역설 — 길을 <em>더</em> 놓았는데 전체가 느려지는 현상</li>
+      </ul>
+    </dd>
+
+    <dt>이 틀이 왜 중요한가</dt>
+    <dd>
+      주차장에서 사회적 최적을 <em>아는</em> 것은 쉽습니다. 관제는 모든 빈자리를
+      알고 있으니까요. 어려운 것은 그것을 <strong>운전자에게 실행시키는 것</strong>이고,
+      바닥에 그려진 유도선이 바로 그 실행 수단입니다.
+      <br /><br />
+      그리고 이 틀이 저희 연구의 두 주제를 하나로 묶습니다:
+      <strong>비협조 운전자란 사회적 최적 배분에서 이탈해 사용자 최적으로
+      되돌아가는 사람</strong>이고, 곧 무정부의 대가를 다시 끌어올리는 요인입니다.
+      복구 전략 비교는 “어느 전략이 PoA 를 가장 낮게 유지하는가”로 다시 쓸 수 있습니다.
+    </dd>
+
+    <dt>교재</dt>
+    <dd>
+      Yosef Sheffi, <em>Urban Transportation Networks</em> —
+      <span class="free">저자가 전문을 무료 공개</span>. 이 분야의 표준서이고
+      Wardrop 균형·BPR·네트워크 배분이 전부 들어 있습니다.
+    </dd>
+  </dl>
+  <div class="ask">
+    <div class="label">교수님께</div>
+    <ol>
+      <li>도로망에서 쓰는 기본도가 <strong>주차장 통로</strong>에도 성립합니까?
+        속도가 훨씬 낮고, 주차하려고 멈추는 차가 흐름을 끊는데요.</li>
+      <li>저희 시스템은 SO 를 <em>강제할 수 있는</em> 드문 경우라고 생각합니다.
+        이걸 정량화하려면 PoA 를 어떻게 측정해야 합니까? 분모(사후 최적)를
+        어떻게 계산합니까?</li>
+    </ol>
+  </div>
+</div>
+
+<!-- 4.6 -->
+<div class="field">
+  <h3>4.6 (선택) 마르코프 결정과정</h3>
+  <p class="one">“지금 이 자리를 주면 나중에 곤란해지는가”를 비용에 넣는 방법.</p>
+  <dl>
+    <dt>왜 필요한가</dt>
+    <dd>
+      지금 비용 함수에는 <strong>자리의 기회비용</strong>이 없습니다. 그래서 좋은
+      자리를 이른 시각에 소진하고, 나중에 온 차량이 멀리 갑니다. 이 “미래 가치”를
+      다루는 틀이 MDP 이고, 항공권·호텔의 재고 관리와 같은 구조입니다.
+    </dd>
+    <dd>
+      <div class="eq">c̃(i, j) = c(i, j)  +  λ<sub>j</sub>
+                     <span class="c">↑ 자리 j 의 기회비용</span></div>
+    </dd>
+
+    <dt>최소한 이것만</dt>
+    <dd>
+      <ul>
+        <li>상태 · 행동 · 보상 · 정책, 할인율 γ</li>
+        <li>벨만 방정식 — 3장의 “점화식” 이 여기서 쓰입니다</li>
+        <li>가치 반복 / 정책 반복 (개념만)</li>
+      </ul>
+    </dd>
+
+    <dt>교재</dt>
+    <dd>
+      Sutton &amp; Barto, <em>Reinforcement Learning: An Introduction</em>
+      <span class="free">무료 공개</span> — 1~4장이면 충분합니다
+    </dd>
+  </dl>
+  <div class="ask">
+    <div class="label">교수님께</div>
+    <ol>
+      <li>상태공간이 2<sup>120</sup> 이라 정면으로 풀 수 없습니다. 기회비용을
+        근사하는 <strong>가장 단순한</strong> 방법이 무엇입니까? 학부 수준에서
+        방어 가능한 근사를 찾고 있습니다.</li>
+    </ol>
+  </div>
+</div>
+
+<!-- ══════════════════ 5 ══════════════════ -->
+<h1><span class="n">5</span>우리 주차장의 수학적 표현</h1>
+<p class="lede">추상적인 이야기를 실제 숫자로 내려놓습니다. 이 장이 교수님과의 대화에서 가장 유용할 것입니다.</p>
+
+<h2>5.1 그래프로서의 주차장</h2>
+<div class="eq">G = (V, E)   방향 가중 그래프
+
+  |V| = 71      통로 위의 점 (여기에 통로 검지기가 있다고 가정)
+  |E| = 80      갈 수 있는 방향. <b>일방통행은 반대 간선이 아예 없다</b>
+  밀도          80 / 71² ≈ 1.6 %   — 아주 희소한 그래프
+
+  w(u, v) = ‖ pos(v) − pos(u) ‖      <span class="c">두 점 사이 유클리드 거리 (벡터의 크기)</span>
+
+  S     주차면 집합, |S| = 120
+  a(s)  주차면 s 의 접근 노드 ∈ V     <span class="c">그 자리 앞의 통로 위 점</span>
+  g     건물 출입구 좌표             <span class="c">여기서 가까운 자리가 인기 자리</span></div>
+
+<p>
+  구조는 3 × 3 격자입니다. 수평 통로 3개는 <strong>일방통행이 엇갈리게</strong>
+  배치되어 있고(동 → 서 → 동), 수직 통로 5개가 그것을 잇습니다. 통로 안에서
+  U턴이 불가능하도록 일부러 이렇게 만들었습니다 — 그래야 “자리를 빼앗겨
+  되돌아가는 비용”이 실제로 발생하기 때문입니다.
+</p>
+
+<h2>5.2 문제의 정식화</h2>
+<div class="eq"><b>주어진 것</b>
+  차량 집합 I = {1, …, n},  빈 자리 집합 J ⊆ S
+  각 차량의 현재 위치 v<sub>i</sub> ∈ V
+
+<b>비용</b>
+  c(i, j) = w<sub>drive</sub> · d<sub>G</sub>(v<sub>i</sub>, a(j))  +  w<sub>walk</sub> · ‖ pos(j) − g ‖
+                 <span class="c">↑ 그래프 위 최단거리</span>        <span class="c">↑ 직선 도보거리</span>
+
+<b>찾는 것</b>
+  min  Σ<sub>i</sub> Σ<sub>j</sub> c(i,j) x<sub>ij</sub>
+  s.t. Σ<sub>j</sub> x<sub>ij</sub> = 1  ∀i     자리는 차량마다 하나
+       Σ<sub>i</sub> x<sub>ij</sub> ≤ 1  ∀j     한 자리에 한 대
+       x<sub>ij</sub> ∈ {0, 1}</div>
+
+<div class="box">
+  <div class="label">여기서 이미 보이는 긴장</div>
+  <p style="margin-bottom:0">
+    두 항이 <strong>서로 다른 자리를 가리킵니다.</strong> 실제 우리 도면에서
+    주행거리만 보면 <code>F-01</code> 이 최선이지만 거기서 건물까지 도보 103 m 입니다.
+    비용 전체로는 <code>A-10</code> 이 최선입니다(주행 131 m + 도보 12 m).
+    <br />가중치 <var>w</var><sub>walk</sub> 를 얼마로 둘 것인가는 <strong>공학적
+    판단이지 수학이 답해 주지 않습니다.</strong> 너무 크면 모두 A구역으로 몰려
+    통로가 막히고, 너무 작으면 운전자가 안내를 무시합니다.
+  </p>
+</div>
+
+<h2>5.3 실행해 보기</h2>
+<p>
+  동봉한 <code>parking_topology.py</code> 를 그대로 실행한 결과입니다.
+  차량 8대를 통로 곳곳에 흩어 놓고 인기 자리 20개를 두고 배정했습니다.
+</p>
+<pre><span class="c">$ python parking_topology.py</span>
+
+<span class="c">══ 4. 배정 : 탐욕법 vs 헝가리안 ══</span>
+  차량 8 대가 통로 곳곳에 흩어져 있고, 빈 자리는 20 개
+  탐욕법   총비용 =     974.3
+  헝가리안 총비용 =     965.7   (-0.88 %)
+
+  배정이 어떻게 갈렸나:
+      차량 위치     탐욕법    헝가리안
+         ENTRY      A-10      A-10
+         H2-04      A-11      A-11
+         H2-11      A-12      A-12
+         H2-18      A-13      A-14   &lt;- 다름
+         H1-16      A-14      B-11   &lt;- 다름
+         H1-08      A-09      A-08   &lt;- 다름
+         H0-03      A-08      A-09   &lt;- 다름
+         H0-14      A-15      A-13   &lt;- 다름
+
+<span class="c">══ 5. 혼잡 : 배정이 통로 부하를 바꾼다 ══</span>
+  탐욕법    사용 간선 51 개, 최대 부하 4 대, 평균 1.61 대
+  헝가리안  사용 간선 50 개, 최대 부하 4 대, 평균 1.56 대</pre>
+
+<p>
+  여덟 대 중 <strong>다섯 대의 배정이 갈렸고</strong>, 총비용은 0.88 % 개선됐습니다.
+  작아 보이지만 이건 <em>한 번의 배정</em>이고, 실제로는 900초 동안 180번
+  일어납니다. 그리고 더 중요한 것은 마지막 줄입니다 —
+  <strong>총비용이 거의 같아도 통로 부하 분포는 다릅니다.</strong>
+  지금 비용 함수는 그 차이를 보지 못합니다.
+</p>
+
+<div class="box">
+  <div class="label">직접 해 볼 것</div>
+  <ul style="margin-bottom:0">
+    <li>모든 차량을 <code>ENTRY</code> 에 두면 어떻게 됩니까? (힌트: 행이 전부 같아져
+      <em>퇴화</em>합니다. 어떤 배정이든 총비용이 같습니다. 왜 그런지 설명할 수
+      있으면 배정 문제를 이해한 것입니다.)</li>
+    <li><code>W_WALK</code> 를 0 으로, 또 5.0 으로 바꿔 보세요. 배정이 어느 구역으로
+      몰립니까?</li>
+    <li>빈 자리를 20개가 아니라 8개로 줄이면 탐욕법과 헝가리안의 차이가
+      커집니까, 작아집니까? 왜 그럴까요?</li>
+  </ul>
+</div>
+
+<!-- ══════════════════ 6 ══════════════════ -->
+<h1><span class="n">6</span>교수님께 가져갈 질문지</h1>
+<p class="lede">모르는 것을 묻는 게 아니라, 어디까지 알아봤고 어디서 막혔는지를 보여주는 게 좋은 질문입니다.</p>
+
+<h2>먼저 보여드릴 것 (3분)</h2>
+<ol>
+  <li><strong>문제 한 문장</strong> — “빔 프로젝터로 바닥에 차량별 색 유도선을 그려
+    빈자리로 안내합니다. 인력 절감뿐 아니라 <em>혼잡도</em> 개선되는지 보고 싶습니다.”</li>
+  <li><strong>도면</strong> — 노드 71 · 간선 80 · 주차면 120, 일방통행 격자</li>
+  <li><strong>지금 푸는 방식</strong> — 가산적 비용 함수 + 탐욕적 배정</li>
+  <li><strong>측정한 결과</strong> — 무안내 대비 주차소요 −47 %, 우회거리 −96 %,
+    처리량 +51 %</li>
+  <li><strong>막힌 지점</strong> — “이게 혼잡 개선인지 확신이 없습니다”</li>
+</ol>
+
+<h2>질문 (우선순위 순)</h2>
+<table>
+  <tr><th style="width:8mm">#</th><th style="width:26mm">분야</th><th>질문</th></tr>
+  <tr><td class="num">1</td><td>교통류</td>
+    <td>주차장의 “혼잡”을 정의하려면 무엇을 재야 합니까? 도로망의 기본도가
+      저속·빈번한 정차가 있는 주차장 통로에도 성립합니까?</td></tr>
+  <tr><td class="num">2</td><td>큐잉</td>
+    <td>주차장을 M/M/c/K 로 근사할 때 <var>c</var>, <var>K</var> 를 무엇으로 두어야
+      하며, 이 근사가 깨지는 지점은 어디입니까?</td></tr>
+  <tr><td class="num">3</td><td>최적화</td>
+    <td>혼잡 항을 비선형(BPR 등)으로 바꾸면 배정 문제의 정수성이 깨집니다.
+      그래도 실용적으로 풀 수 있는 방법이 있습니까?</td></tr>
+  <tr><td class="num">4</td><td>균형</td>
+    <td>저희는 사회적 최적을 <em>강제할 수 있는</em> 경우라고 봅니다.
+      무정부의 대가를 실제로 측정하려면 분모(사후 최적)를 어떻게 구합니까?</td></tr>
+  <tr><td class="num">5</td><td>온라인</td>
+    <td>도착 분포를 아는 온라인 배정에서, 최악 경우가 아니라 기댓값 기준의
+      성능 보장을 주는 틀이 있습니까?</td></tr>
+  <tr><td class="num">6</td><td>MDP</td>
+    <td>자리의 기회비용을 학부 수준에서 방어 가능하게 근사하는 방법은?</td></tr>
+  <tr><td class="num">7</td><td>실험설계</td>
+    <td>“혼잡이 줄었다”를 주장하려면 어떤 실험이 필요합니까? 도착률을 올려가며
+      포화점을 비교하려는데 타당한 접근입니까?</td></tr>
+  <tr><td class="num">8</td><td>검증</td>
+    <td>시뮬레이션 결과를 논문·공모전에서 방어하려면 어떤 검증(validation)이
+      필요합니까?</td></tr>
+</table>
+
+<div class="box">
+  <div class="label">질문할 때</div>
+  <ul style="margin-bottom:0">
+    <li>“이거 어떻게 해요?” 보다 <strong>“저희는 이렇게 생각했는데 맞습니까?”</strong>
+      가 훨씬 좋은 답을 얻습니다. 틀려도 괜찮습니다 — 어디가 틀렸는지 알려주십니다.</li>
+    <li>답을 다 이해 못 해도 <strong>키워드를 적어 오세요.</strong>
+      “그건 ○○ 문제네요” 라는 한마디가 한 달치 검색을 줄여 줍니다.</li>
+    <li><code>parking_topology.py</code> 를 노트북에 띄워 가세요. 화면에 숫자가 있으면
+      대화가 구체적이 됩니다.</li>
+  </ul>
+</div>
+
+<!-- ══════════════════ 7 ══════════════════ -->
+<h1><span class="n">7</span>4주 학습 계획과 자료</h1>
+<p class="lede">하루 1~2시간 기준입니다. 완벽히 이해하려 하지 말고 일단 끝까지 통과하세요.</p>
+
+<table>
+  <tr><th style="width:16mm">주</th><th style="width:44mm">주제</th><th>할 일</th></tr>
+  <tr>
+    <td><strong>1주</strong></td><td>표기법 + 그래프</td>
+    <td>3장의 표기 익히기 · 그래프 표현과 다익스트라 · <code>parking_topology.py</code>
+      1~2절을 직접 고쳐 보기 (다른 출발점에서 최단경로 뽑기)</td>
+  </tr>
+  <tr>
+    <td><strong>2주</strong></td><td>배정 문제</td>
+    <td>이분 매칭 · 헝가리안(원리보다 사용법 먼저) · LP 와 쌍대성 맛보기 ·
+      코드 4절을 바꿔 가며 실험</td>
+  </tr>
+  <tr>
+    <td><strong>3주</strong></td><td>확률과 큐잉</td>
+    <td>포아송 과정 · 리틀의 법칙 · M/M/c · 우리 실험 결과에 직접 대입해 보기</td>
+  </tr>
+  <tr>
+    <td><strong>4주</strong></td><td>교통류와 균형</td>
+    <td>기본도 · BPR · Wardrop UE/SO · Sheffi 1~2장 · 질문지 정리해서 교수님 면담</td>
+  </tr>
+</table>
+
+<h2>자료 목록</h2>
+<table>
+  <tr><th style="width:52mm">자료</th><th style="width:26mm">분야</th><th>비고</th></tr>
+  <tr><td>Sheffi, <em>Urban Transportation Networks</em></td><td>교통류 · 균형</td>
+      <td><span class="free">무료 공개</span> 4.5의 표준서. 우리 문제와 가장 가깝습니다</td></tr>
+  <tr><td>Sutton &amp; Barto, <em>Reinforcement Learning</em></td><td>MDP</td>
+      <td><span class="free">무료 공개</span> 1~4장만</td></tr>
+  <tr><td>Kleinberg &amp; Tardos, <em>Algorithm Design</em></td><td>그래프 · 매칭</td>
+      <td>가장 읽기 쉽습니다. 4장(그래프), 7장(흐름·매칭)</td></tr>
+  <tr><td>CLRS, <em>Introduction to Algorithms</em></td><td>알고리즘 전반</td>
+      <td>통독용이 아니라 참고서. 22~26장</td></tr>
+  <tr><td>Papadimitriou &amp; Steiglitz, <em>Combinatorial Optimization</em></td>
+      <td>조합 최적화</td><td>Dover 보급판이 저렴합니다</td></tr>
+  <tr><td>Ahuja · Magnanti · Orlin, <em>Network Flows</em></td><td>흐름 · 배정</td>
+      <td>최소비용 흐름을 제대로 보려면</td></tr>
+  <tr><td>Ross, <em>Introduction to Probability Models</em></td><td>확률 · 큐잉</td>
+      <td>포아송과 대기행렬</td></tr>
+  <tr><td>Borodin &amp; El-Yaniv, <em>Online Computation</em></td><td>온라인</td>
+      <td>필요할 때만</td></tr>
+</table>
+
+<div class="box">
+  <div class="label">한 가지만 고른다면</div>
+  <p style="margin-bottom:0">
+    <strong>Sheffi 의 <em>Urban Transportation Networks</em></strong> 입니다.
+    무료로 공개돼 있고, “여러 사람이 각자 최선을 택할 때 전체가 어떻게 되는가”라는
+    우리 문제의 핵심을 정면으로 다룹니다. 앞의 두세 장만 읽어도
+    무안내와 유도선 안내의 차이를 설명할 언어가 생깁니다.
+  </p>
+</div>
+
+<div class="end">
+  이 문서와 <code>parking_topology.py</code> 는 프로젝트 저장소의 <code>docs/study/</code> 에 있습니다.
+</div>
+
+</body>
+</html>
