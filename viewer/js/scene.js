@@ -164,6 +164,11 @@ export class Stage {
   follow(getPoint) {
     this._follow = getPoint;
     this._camTween = null;
+    // 진행 중인 시선 이동을 반드시 끈다. 안 끄면 `update()` 에서 그쪽이 나중에
+    // 실행되어 추적 타깃을 덮어쓴다 — 차를 바꿔 클릭하면 카메라가 주차장 한복판을
+    // 한 번 들렀다 간다.
+    this._recenter = null;
+    this._lookTo = null;
     this.cameraMode = "follow";
   }
 

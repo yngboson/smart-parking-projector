@@ -137,6 +137,8 @@ class App {
     this._silent = false;
 
     for (const s of frame.slots ?? []) this.slotStatus.set(s.id, s.status);
+    // 지나간 사건은 로그에만 넣는다 — 고리를 띄우면 되감을 때마다 화면이 번쩍인다
+    for (const e of frame.history ?? []) this.logEvent(e, { quiet: true });
     for (const e of frame.events ?? []) this.logEvent(e);
 
     this.kpi = frame.kpi ?? {};
@@ -159,8 +161,10 @@ class App {
     for (const f of this.flashes) this.stage.scene.remove(f.group);
     this.flashes.length = 0;
     this.events.length = 0;
-    renderEvents(this.events);
-    this.stopFollowing();
+    renderEvents(this.events, this);
+    // **추적은 끊지 않는다.** 한 칸 넘기는 것만으로 따라가던 차를 놓치면,
+    // 사건 순간을 한 프레임씩 짚어 보는 동안 카메라가 계속 풀린다.
+    // 그 차가 정말 사라졌다면 `Stage.follow` 가 스스로 놓는다.
   }
 
   /**
@@ -270,16 +274,17 @@ class App {
     if (!keepColor) this.palette.release(plate);
   }
 
-  logEvent(e) {
+  logEvent(e, { quiet = false } = {}) {
     const text =
       e.type === "slot_stolen"
         ? `<b>자리 강탈</b> ${e.taker} 가 ${e.slot} 을 차지 — ${e.victim} 재배정`
         : `경로 이탈 ${e.plate} (${e.node})`;
-    this.events.unshift({ t: this.t, text, kind: e.type, slot: e.slot, plate: e.victim ?? e.plate });
+    const at = e.t ?? this.t;
+    this.events.unshift({ t: at, text, kind: e.type, slot: e.slot, plate: e.victim ?? e.plate });
     this.events.length = Math.min(this.events.length, EVENT_LOG);
     renderEvents(this.events, this);
 
-    if (e.type === "slot_stolen") this.flashSlot(e.slot, e.victim);
+    if (!quiet && e.type === "slot_stolen") this.flashSlot(e.slot, e.victim);
   }
 
   /**

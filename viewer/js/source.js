@@ -16,6 +16,9 @@
  *   .seekable                  타임라인을 끌 수 있는가 (녹화본만)
  */
 
+const HISTORY = 8;
+/** 건너뛴 지점에서 되살릴 지난 사건의 수. 이벤트 로그가 보여주는 줄 수보다 넉넉히. */
+
 /** 라이브 스트림 — 서버가 시뮬레이션을 굴리며 밀어 넣는다. */
 export class LiveSource {
   constructor(url = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`) {
@@ -184,8 +187,22 @@ export class TraceSource {
         g.polyline ? g : { ...g, ...(polylines.get(g.id) ?? {}) }
       ),
       slots: [...slots].map(([id, status]) => ({ id, status })),
-      events: [],                     // 건너뛴 구간의 사건은 이미 지나간 일이다
+      // 이 프레임의 사건은 **지금 벌어지는 일**이다. 그대로 흘려 고리를 띄운다.
+      events: frame.events ?? [],
+      // 그 앞의 사건들은 지나간 일이다. 로그에만 남긴다 — 안 남기면 강탈 순간으로
+      // 되감았는데 이벤트 목록이 비어 있어 "그 줄을 눌러 자리를 비춘다"가 성립하지
+      // 않는다. 발표에서 제일 많이 쓸 동작이 바로 그것이다.
+      history: this._historyBefore(i),
     };
+  }
+
+  /** i 프레임 **직전**까지의 최근 사건들. 오래된 것부터. */
+  _historyBefore(i) {
+    const out = [];
+    for (let k = 0; k < i; k++) {
+      for (const e of this.frames[k].events ?? []) out.push({ ...e, t: this.frames[k].t });
+    }
+    return out.slice(-HISTORY);
   }
 
   /**
