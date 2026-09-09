@@ -108,8 +108,10 @@ sim/scenarios/   *.yaml + loader.py  (도착률, 성향 분포, 시드, 사용�
 sim/metrics/     collector.py, trace_writer.py
 sim/experiments/ run_matrix.py, report.py
 layouts/         주차장 도면 JSON (코드에 좌표를 하드코딩하지 말 것)
-server/app.py    FastAPI: WebSocket 라이브 스트림 + 정적 서빙
+server/app.py    FastAPI: WebSocket 라이브 스트림 + 정적 서빙 + 모델 설정 읽기/쓰기
 viewer/          three.js 뷰어 — 빌드 스텝 없음 (ES 모듈 + importmap)
+                 scene.js(카메라·조명) guidance.js(유도선) track.js(궤적)
+                 highlight.js(사건 고리) model_tuner.js(STL 조정) source.js(라이브/녹화본)
 tests/
 ```
 
@@ -131,11 +133,18 @@ tests/
 ## 실행
 
 ```bash
-pytest tests/ -v                                    # 전체 테스트
+pytest tests/                                       # 전체 테스트 (코어 수만큼 병렬)
 uvicorn server.app:app --reload                     # 라이브 뷰어 → localhost:8000
-python -m sim.experiments.run_matrix --scenario sim/scenarios/rush_hour.yaml --seeds 30
-python -m sim.experiments.report runs/<run_id>      # 비교표·그래프
+
+python -m sim.experiments.run_matrix --scenario rush_hour --seeds 30
+python -m sim.experiments.run_matrix --scenario busy --compare-baseline --seeds 10
+python -m sim.experiments.report runs/<run_id>      # 비교표·박스플롯
 ```
+
+**실험 결과를 읽을 때는 평균만 보지 마세요.** `runs/<run_id>/matrix.jsonl` 의 시드별
+원본을 펼쳐 보세요. 교착은 시드 몇 개에만 나타나고 평균에서는 "편차"로 위장합니다 —
+실제로 그 때문에 비교표가 전략 품질이 아니라 "교착을 우연히 피했는지"를 재고 있었던
+적이 있습니다 (D-026).
 
 ## 커밋 규칙
 
