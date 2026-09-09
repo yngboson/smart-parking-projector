@@ -62,14 +62,20 @@ def test_stride_thins_the_file_without_losing_slot_changes(tmp_path, lot: LotMap
 
     assert len(thin) < len(dense) / 3
 
-    def final_status(frames):
+    def status_at(frames, cutoff):
         status = {}
         for f in frames:
+            if f["t"] > cutoff:
+                break
             for s in f["slots"]:
                 status[s["id"]] = s["status"]
         return status
 
-    assert final_status(thin) == final_status(dense)
+    # 솎아낸 쪽은 마지막 발행 시점에서 끝나므로 최대 stride 틱만큼 일찍 멈춘다.
+    # 비교는 **양쪽이 공통으로 가진 시점**에서 해야 한다 — 안 그러면 데이터 유실이
+    # 아니라 끝나는 시각 차이를 검사하게 된다.
+    cutoff = thin[-1]["t"]
+    assert status_at(thin, cutoff) == status_at(dense, cutoff)
 
 
 def test_a_truncated_trace_still_replays(tmp_path, lot: LotMap) -> None:

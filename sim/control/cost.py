@@ -60,8 +60,10 @@ def slot_is_eligible(slot: Slot, vehicle_class: VehicleClass) -> bool:
     if slot.slot_type is SlotType.COMPACT and vehicle_class is not VehicleClass.COMPACT:
         return False
 
+    # 실제로 들어가야 한다. 예전에는 여유를 40cm 나 봐줬는데, 그 탓에 전장 5.2m
+    # 밴이 5.0m 주차면에 배정되고 있었다 — 화면에서 차가 칸 밖으로 삐져나온다.
     length, width = vehicle_class.footprint
-    return width <= slot.width + 0.15 and length <= slot.length + 0.40
+    return width <= slot.width and length <= slot.length
 
 
 def fit_penalty(slot: Slot, vehicle_class: VehicleClass, w: CostWeights) -> float:

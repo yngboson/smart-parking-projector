@@ -7,19 +7,24 @@
   "dwell_mean": 150.0,
   "dwell_min": 30.0,
   "max_guided": 20,
+  "returning_share": 0.35,
+  "prefill": 0.0,
   "entry_clearance": 9.0,
   "slot_sensor_mode": "anpr",
+  "noncompliant_share": 0.0,
+  "compliance_low": 0.3,
+  "compliance_high": 0.75,
   "vision_enabled": false
  },
  "frames": 800,
  "duration": 239.8,
  "kpi": {
-  "occupancy": 0.1167,
-  "avg_park_time": 37.95,
+  "occupancy": 0.1333,
+  "avg_park_time": 38.07,
   "reroutes": 0,
-  "active": 22,
-  "parked_total": 27,
+  "active": 30,
+  "parked_total": 36,
   "stolen": 0,
-  "forced_merges": 33
+  "forced_merges": 38
  }
 }

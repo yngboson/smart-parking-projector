@@ -109,12 +109,19 @@ def test_no_reverse_edge_exists_on_one_way_aisles(lot: LotMap) -> None:
 
 
 def test_slot_access_node_is_adjacent_to_the_slot(lot: LotMap) -> None:
-    """주차면의 진입 지점과 배정된 통로 노드가 실제로 붙어 있어야 한다."""
+    """주차면의 진입 지점과 배정된 통로 노드가 실제로 붙어 있어야 한다.
+
+    허용 거리를 상수로 박지 않는다. 통로 노드는 통로 중심선에 있고 주차면 입구는
+    통로 경계에 있으므로, 둘 사이는 **정확히 통로 폭의 절반**이다. 상수로 두면
+    주차 규격을 바꾸는 순간 이 검사가 무슨 뜻인지 알 수 없게 된다.
+    """
+    half_aisle = max(a.width for a in lot.aisles) / 2.0
+
     for slot in lot.slots.values():
         node = lot.node_pos(slot.access_node)
         assert abs(node.x - slot.center.x) < 1e-6, f"{slot.id}: 통로 노드가 x축으로 어긋남"
         gap = abs(node.y - slot.entry_point.y)
-        assert gap <= 3.1, f"{slot.id}: 통로 노드가 {gap:.1f}m 떨어져 있음"
+        assert gap <= half_aisle + 0.1, f"{slot.id}: 통로 노드가 {gap:.1f}m 떨어져 있음"
 
 
 def test_parked_cars_face_the_aisle(lot: LotMap) -> None:

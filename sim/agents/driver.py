@@ -45,8 +45,11 @@ STAGING_LEAD_IN = 3.0
 후진 주차는 시작 자세가 전부라 방향이 틀어지면 주차면을 벗어난다.
 """
 
-KEEP_RIGHT = 1.35
-"""통로 중앙선이 아니라 오른쪽으로 이만큼 붙어 달린다(m).
+KEEP_RIGHT_RATIO = 0.225
+"""통로 중앙선이 아니라 오른쪽으로 (통로 폭 × 이 비율)만큼 붙어 달린다.
+
+폭 6m 통로에서 1.35m — 교착을 없앤 값이 그것이었고, 통로를 넓히면 간격도 함께
+넓어져야 한다. 고정값으로 두면 통로만 넓어지고 차는 여전히 가운데로 몰린다.
 
 **교착을 막는 것은 신호나 통제가 아니라 이 습관이다.** 수직 통로는 양방향이고
 폭이 6m 다. 두 대가 각자 오른쪽으로 붙으면 중심 간격이 2.7m 가 되어 서로 스쳐
@@ -56,6 +59,9 @@ KEEP_RIGHT = 1.35
 관제가 그리는 유도선은 통로 중앙에 남는다. 선을 정확히 밟고 가는 것이 아니라
 선을 보고 자기 차선을 잡는 것이 사람이 하는 일이기 때문이다.
 """
+
+FALLBACK_AISLE_WIDTH = 6.0
+"""도면에 통로 정보가 없을 때 가정하는 폭(m)."""
 
 MIN_TEMPTATION_GAIN = 12.0
 """이만큼은 덜 달려야 이탈을 고민한다(m).
@@ -168,6 +174,7 @@ class Driver:
 
     _revision: int = field(default=-1, init=False)
     _stalled_since: float | None = field(default=None, init=False)
+    _keep_right: float = field(default=0.0, init=False)
     _lane: list[Vec2] = field(default_factory=list, init=False)
     """지금 달리는 통로 구간. 이탈할 때 새 정차 지점만 갈아 끼우면 된다."""
 
@@ -179,6 +186,7 @@ class Driver:
 
     def __post_init__(self) -> None:
         self._follower = PathFollower(self.spec, self.profile.skill)
+        self._keep_right = _keep_right_offset(self.lot)
 
     # ── 외부에서 걸어오는 신호 ─────────────────────────────────────
 
@@ -459,7 +467,7 @@ class Driver:
         """새 유도선을 받아 주행 경로와 후진 주차 궤적을 준비한다."""
         slot = self.lot.slots[guidance.target_slot]
         lane = _keep_right(
-            _lane_part(guidance.polyline, slot.entry_point, slot.center), KEEP_RIGHT
+            _lane_part(guidance.polyline, slot.entry_point, slot.center), self._keep_right
         )
         approach = _approach_heading(lane, self.lot.node_pos(slot.access_node))
 
@@ -502,7 +510,7 @@ class Driver:
         if route is None:
             return None
 
-        lane = _keep_right([self.lot.node_pos(n) for n in route], KEEP_RIGHT)
+        lane = _keep_right([self.lot.node_pos(n) for n in route], self._keep_right)
         if self._maneuver is None:
             return [state.pose.position] + lane
 
@@ -570,6 +578,12 @@ def _lane_part(
         if pts and pts[-1].distance_to(anchor) < 1e-6:
             pts.pop()
     return pts
+
+
+def _keep_right_offset(lot: LotMap) -> float:
+    """이 주차장에서 오른쪽으로 얼마나 붙어 달릴 것인가(m)."""
+    widths = [a.width for a in lot.aisles]
+    return (min(widths) if widths else FALLBACK_AISLE_WIDTH) * KEEP_RIGHT_RATIO
 
 
 def _keep_right(points: Sequence[Vec2], offset: float) -> list[Vec2]:

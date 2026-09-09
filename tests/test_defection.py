@@ -19,7 +19,7 @@ from random import Random
 
 import pytest
 
-from sim.agents.driver import Driver, DriverPhase, DriverProfile
+from sim.agents.driver import Driver, DriverPhase, DriverProfile, _keep_right_offset
 from sim.common.geometry import Pose, Vec2
 from sim.common.ids import SlotId
 from sim.common.lotmap import LotMap
@@ -53,6 +53,16 @@ def crowded(lot: LotMap):
     return sim, thefts, rows, peak
 
 
+def lane_y(lot: LotMap) -> float:
+    """H0 통로(동쪽 일방통행)에서 우측통행 차선의 y 좌표.
+
+    도면에서 계산한다. 좌표를 테스트에 박아 두면 주차 규격을 바꾸는 순간
+    조용히 엉뚱한 곳을 시험하게 된다 (CLAUDE.md '도면 좌표를 하드코딩하지 말 것').
+    """
+    h0 = next(a for a in lot.aisles if a.id == "H0")
+    return h0.start.y - _keep_right_offset(lot)
+
+
 def cruising(lot: LotMap, compliance: float, walk_preference: float = 1.0) -> Driver:
     """H0 통로를 동쪽으로 달리며 먼 자리를 향해 가는 운전자."""
     driver = Driver(
@@ -61,7 +71,9 @@ def cruising(lot: LotMap, compliance: float, walk_preference: float = 1.0) -> Dr
         profile=DriverProfile(compliance=compliance, walk_preference=walk_preference),
         rng=Random(1),
     )
-    driver._lane = [Vec2(x, 38.65) for x in range(5, 66, 5)]
+    y = lane_y(lot)
+    east = lot.bounds[2]
+    driver._lane = [Vec2(x, y) for x in range(5, int(east) - 5, 5)]
     driver._approach = 0.0
     driver._target_walk = 40.0            # 배정받은 자리는 건물에서 40m
     driver.target_slot = SlotId("B-20")
@@ -87,8 +99,9 @@ def seeing(lot: LotMap, *slots) -> Perception:
     )
 
 
-def driving_east() -> SelfState:
-    return SelfState(pose=Pose(10.0, 38.65, 0.0), speed=3.0, steer=0.0, gear=1)
+def driving_east(lot: LotMap) -> SelfState:
+    """통로 서쪽 끝에서 동쪽을 향해 달리는 중."""
+    return SelfState(pose=Pose(10.0, lane_y(lot), 0.0), speed=3.0, steer=0.0, gear=1)
 
 
 # ── 이탈 판단 ─────────────────────────────────────────────────────
@@ -99,7 +112,7 @@ def test_a_compliant_driver_never_defects(lot: LotMap) -> None:
     driver = cruising(lot, compliance=1.0)
     before = driver.target_slot
 
-    assert not driver._consider_defection(driving_east(), seeing(lot, on_the_aisle(lot, "A-08")))
+    assert not driver._consider_defection(driving_east(lot), seeing(lot, on_the_aisle(lot, "A-08")))
     assert driver.target_slot == before
 
 
@@ -107,7 +120,7 @@ def test_a_noncompliant_driver_takes_the_better_spot(lot: LotMap) -> None:
     """눈앞에 더 좋은 자리가 있으면 안내를 무시한다 — 이 연구의 돌발 상황 그 자체."""
     driver = cruising(lot, compliance=0.0)
 
-    assert driver._consider_defection(driving_east(), seeing(lot, on_the_aisle(lot, "A-08")))
+    assert driver._consider_defection(driving_east(lot), seeing(lot, on_the_aisle(lot, "A-08")))
     assert driver.target_slot == SlotId("A-08")
     assert driver._defected
 
@@ -115,13 +128,14 @@ def test_a_noncompliant_driver_takes_the_better_spot(lot: LotMap) -> None:
 def test_an_occupied_looking_slot_is_not_tempting(lot: LotMap) -> None:
     driver = cruising(lot, compliance=0.0)
     perception = seeing(lot, on_the_aisle(lot, "A-08", looks_free=False))
-    assert not driver._consider_defection(driving_east(), perception)
+    assert not driver._consider_defection(driving_east(lot), perception)
 
 
 def test_a_slot_already_behind_is_too_late(lot: LotMap) -> None:
     """후진 주차는 자리를 지나쳐 정차한 뒤 들어간다. 코앞의 자리는 이미 늦었다."""
     driver = cruising(lot, compliance=0.0)
-    state = SelfState(pose=Pose(60.0, 38.65, 0.0), speed=3.0, steer=0.0, gear=1)
+    # 통로 동쪽 끝 — A-02 는 한참 뒤에 있다
+    state = SelfState(pose=Pose(lot.bounds[2] - 15.0, lane_y(lot), 0.0), speed=3.0, steer=0.0, gear=1)
     assert not driver._consider_defection(state, seeing(lot, on_the_aisle(lot, "A-02")))
 
 
@@ -130,7 +144,7 @@ def test_a_far_walk_is_not_tempting_even_if_it_is_closer(lot: LotMap) -> None:
     driver = cruising(lot, compliance=0.0, walk_preference=1.0)
     driver._target_walk = 5.0        # 배정받은 자리가 이미 건물 코앞이다
     perception = seeing(lot, on_the_aisle(lot, "A-08", walk=60.0))
-    assert not driver._consider_defection(driving_east(), perception)
+    assert not driver._consider_defection(driving_east(lot), perception)
 
 
 def test_the_same_slot_is_only_considered_once(lot: LotMap) -> None:
@@ -141,7 +155,7 @@ def test_the_same_slot_is_only_considered_once(lot: LotMap) -> None:
     driver = cruising(lot, compliance=0.999)
     perception = seeing(lot, on_the_aisle(lot, "A-08"))
     for _ in range(200):
-        driver._consider_defection(driving_east(), perception)
+        driver._consider_defection(driving_east(lot), perception)
     assert driver._considered == {SlotId("A-08")}
     assert not driver._defected
 
@@ -152,11 +166,13 @@ def test_slots_belonging_to_another_aisle_are_ignored(lot: LotMap) -> None:
     그리로 꺾어 들어가면 진입 방향이 맞지 않아 주차가 성립하지 않는다.
     """
     driver = cruising(lot, compliance=0.0)
-    heading_north = SelfState(pose=Pose(3.0, 20.0, math.pi / 2), speed=3.0, steer=0.0, gear=1)
+    west_aisle = next(a for a in lot.aisles if a.axis == "v")
+    heading_north = SelfState(
+        pose=Pose(west_aisle.start.x, 20.0, math.pi / 2), speed=3.0, steer=0.0, gear=1
+    )
     assert not driver._is_on_this_aisle(SlotId("C-01"), heading_north)
 
-    east = driving_east()
-    assert driver._is_on_this_aisle(SlotId("A-08"), east)
+    assert driver._is_on_this_aisle(SlotId("A-08"), driving_east(lot))
 
 
 def test_a_driver_gives_up_when_the_target_is_visibly_taken(lot: LotMap) -> None:
