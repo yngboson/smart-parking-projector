@@ -23,8 +23,8 @@ SIM = REPO / "sim"
 
 # 각 계층이 import 해서는 안 되는 패키지
 FORBIDDEN: dict[str, set[str]] = {
-    "sim.control": {"sim.agents", "sim.world"},
-    "sim.agents": {"sim.control", "sim.world"},
+    "sim.control": {"sim.agents", "sim.world", "sim.metrics", "sim.experiments"},
+    "sim.agents": {"sim.control", "sim.world", "sim.metrics", "sim.experiments"},
 }
 
 WHY = {
@@ -41,6 +41,22 @@ WHY = {
     ),
     ("sim.agents", "sim.world"): (
         "차량이 시뮬레이터 전역 상태를 보게 된다. 운전자는 자기 시야만 안다."
+    ),
+    ("sim.control", "sim.metrics"): (
+        "지표 수집기는 계층 **바깥의 관찰자**라 양쪽을 다 본다. 관제가 그것을 "
+        "import 하면 금지된 정보로 가는 우회로가 열린다."
+    ),
+    ("sim.agents", "sim.metrics"): (
+        "지표 수집기는 계층 바깥의 관찰자라 양쪽을 다 본다. 차량이 그것을 "
+        "import 하면 남의 상태를 볼 수 있게 된다."
+    ),
+    ("sim.control", "sim.experiments"): (
+        "실험 하네스는 시뮬레이션 전체를 만들고 돌린다. 관제가 그것을 import 하면 "
+        "관제가 세상을 만들 수 있게 된다."
+    ),
+    ("sim.agents", "sim.experiments"): (
+        "실험 하네스는 시뮬레이션 전체를 만들고 돌린다. 차량이 그것을 import 하면 "
+        "차량이 세상을 만들 수 있게 된다."
     ),
 }
 

@@ -30,9 +30,14 @@ sim/common/   ↑ 세 계층이 공유하는 불변 값 타입(DTO)만
 
 | 패키지 | import 해도 되는 것 | **금지** |
 |---|---|---|
-| `sim/control/` | `sim.common` 만 | `sim.agents`, `sim.world` |
-| `sim/agents/`  | `sim.common` 만 | `sim.control`, `sim.world` |
+| `sim/control/` | `sim.common` 만 | `sim.agents`, `sim.world`, `sim.metrics`, `sim.experiments` |
+| `sim/agents/`  | `sim.common` 만 | `sim.control`, `sim.world`, `sim.metrics`, `sim.experiments` |
 | `sim/world/`   | `sim.common`, `sim.control`, `sim.agents` (배선 담당) | — |
+| `sim/metrics/`, `sim/experiments/` | 전부 (계층 **바깥의 관찰자**) | — |
+
+`metrics` 와 `experiments` 는 세 계층 밖에 있습니다. 실험을 돌리고 재는 도구이므로
+양쪽을 다 봅니다 — 그래서 **세 계층이 이들을 import 하면 안 됩니다.** 금지된 정보로
+가는 우회로가 열립니다.
 
 배선(wiring)은 **`sim/world/simulation.py` 한 곳에서만** 합니다.
 
