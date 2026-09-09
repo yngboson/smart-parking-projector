@@ -243,12 +243,34 @@ def test_fairness_weighted_prefers_the_repeatedly_displaced(lot: LotMap, router:
 
 def test_priority_is_capped(lot: LotMap) -> None:
     """상한이 없으면 한 사람이 영원히 모든 경쟁을 이긴다."""
+    from sim.control.cost import walk_rank
     from sim.control.recovery.fairness_weighted import MAX_PRIORITY, PRIORITY_STEP
 
     strategy = R.get("fairness_weighted")
     ctx = R.BiasContext(lot=lot, trust=lambda _p: 1.0, reroute_count=lambda _p: 99)
-    sid = next(iter(lot.slots))
-    assert strategy.bias(VICTIM, sid, ctx) == pytest.approx(-PRIORITY_STEP * MAX_PRIORITY)
+    best = min(lot.slots, key=lot.walk_distance)      # 순위 0 = 최대 보정
+    assert strategy.bias(VICTIM, best, ctx) == pytest.approx(-PRIORITY_STEP * MAX_PRIORITY)
+
+
+def test_priority_pulls_toward_the_better_slot(lot: LotMap) -> None:
+    """**보정은 자리마다 달라야 한다.**
+
+    처음에는 상수를 깎았다. 그러면 그 차량의 모든 후보가 똑같이 싸져 최소값이
+    바뀌지 않는다 — 전략이 아무 일도 하지 않는다. 실제로 10개 시드 전부에서
+    `local_reassign` 과 바이트 단위로 같은 결과가 나왔다.
+    """
+    strategy = R.get("fairness_weighted")
+    ctx = R.BiasContext(lot=lot, trust=lambda _p: 1.0, reroute_count=lambda _p: 2)
+
+    best = min(lot.slots, key=lot.walk_distance)
+    worst = max(lot.slots, key=lot.walk_distance)
+
+    assert strategy.bias(VICTIM, best, ctx) < strategy.bias(VICTIM, worst, ctx), (
+        "좋은 자리를 더 크게 깎아 줘야 '우선권'이 성립합니다"
+    )
+    # 밀린 적이 없는 사람에게는 어느 자리든 보정이 없다
+    clean = R.BiasContext(lot=lot, trust=lambda _p: 1.0, reroute_count=lambda _p: 0)
+    assert strategy.bias(VICTIM, best, clean) == 0.0
 
 
 # ── 시뮬레이션에서 갈아끼우기 ─────────────────────────────────────
