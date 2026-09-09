@@ -164,11 +164,7 @@ export class Stage {
   follow(getPoint) {
     this._follow = getPoint;
     this._camTween = null;
-    // 진행 중인 시선 이동을 반드시 끈다. 안 끄면 `update()` 에서 그쪽이 나중에
-    // 실행되어 추적 타깃을 덮어쓴다 — 차를 바꿔 클릭하면 카메라가 주차장 한복판을
-    // 한 번 들렀다 간다.
-    this._recenter = null;
-    this._lookTo = null;
+    this._clearMoves();
     this.cameraMode = "follow";
   }
 
@@ -178,6 +174,19 @@ export class Stage {
     this._recenter = { from: this.controls.target.clone(), t: 0 };
   }
 
+  /**
+   * 진행 중인 시선 이동을 전부 끈다.
+   *
+   * **새 목적지를 정할 때는 반드시 먼저 부른다.** `update()` 가 `_lookTo` 보다
+   * `_recenter` 를 나중에 처리하므로, 둘이 함께 살아 있으면 매 프레임 중앙 복귀가
+   * 이긴다 — 차를 따라가다가 사건 줄을 누르면 카메라가 그 자리가 아니라 주차장
+   * 한복판을 보게 된다. 두 번 같은 실수를 했다.
+   */
+  _clearMoves() {
+    this._recenter = null;
+    this._lookTo = null;
+  }
+
   get following() {
     return Boolean(this._follow);
   }
@@ -185,6 +194,7 @@ export class Stage {
   /** 시선을 한 지점으로 부드럽게 옮긴다. 사건이 난 자리를 보여줄 때 쓴다. */
   lookAtPoint(x, y) {
     this.unfollow();
+    this._clearMoves();          // 중앙 복귀는 취소한다 — 갈 곳이 따로 있다
     this._lookTo = { from: this.controls.target.clone(), to: new THREE.Vector3(x, 0, -y), t: 0 };
   }
 
