@@ -58,6 +58,7 @@ runs/demo/*
 !runs/compare-baseline/
 !runs/recovery-matrix/
 !runs/allocator-matrix/
+!runs/repeat-offenders/
 runs/*/ledger/
 *.mp4
 *.mov

@@ -40,15 +40,24 @@ start-windows.bat
 파이썬 확인 → venv → 의존성 → 도면 생성 → 서버 → 브라우저까지 자동입니다.
 
 ```bash
-pytest tests/ -v                                        # 116개 통과해야 정상 (약 4분 30초)
+pytest tests/                                           # 176개 통과해야 정상 (약 3분, 코어만큼 병렬)
 uvicorn server.app:app --reload                         # 브라우저 → localhost:8000
 python -m sim.world.simulation --duration 300 --arrival-rate 0.15    # 헤드리스
-python -m sim.metrics.trace_writer --duration 240 --out runs/demo    # 녹화
+python -m sim.metrics.trace_writer --duration 300 --out runs/demo    # 녹화
+
+# 실험 (아래 '실험을 어떻게 돌리는가' 참조)
+python -m sim.experiments.run_matrix --scenario busy --compare-baseline --seeds 10
+python -m sim.experiments.report runs/<run_id>
 ```
 
-라이브 뷰어에서 **시나리오**(light/busy/rush_hour)와 **비협조 운전자 비율**을
-그 자리에서 바꿀 수 있습니다. 비율을 0 으로 두면 강탈이 사라지는 것이 보입니다 —
-발표에서 문제의 원인을 보여주는 장면입니다.
+라이브 뷰어에서 **시나리오**와 **비협조 운전자 비율**을 그 자리에서 바꿀 수 있습니다.
+비율을 0 으로 두면 강탈이 사라지는 것이 보입니다 — 발표에서 문제의 원인을 보여주는
+장면입니다.
+
+**녹화본에서는 타임라인을 끌 수 있습니다.** `?trace=/runs/demo/trace.jsonl` 로 특정
+녹화본을 지목할 수도 있습니다. 강탈이 일어나면 그 자리에 고리가 퍼지고, 이벤트
+목록의 줄을 누르면 카메라가 그 자리를 비춥니다. 안내 목록의 줄을 누르면 그 차를
+따라갑니다 — "이 차가 지금 무엇을 겪고 있는지 보시죠"로 넘어가는 통로입니다.
 
 브라우저를 열면 **Python 시뮬레이션이 실시간으로 보낸 프레임**이 그대로 보입니다.
 서버가 없으면 뷰어가 알아서 `runs/demo` 녹화본으로 넘어갑니다 (D-005).
