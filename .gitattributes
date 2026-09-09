@@ -1,6 +1,14 @@
 # 다른 머신/세션이 이어받으므로 줄바꿈을 LF 로 통일한다.
 * text=auto eol=lf
 
+# ⚠️ 단, Windows 배치 파일은 예외다.
+# cmd.exe 는 배치 파일에 CRLF 를 요구한다. LF 로 저장하면 줄을 나누지 못해
+# 주석과 명령이 뒤엉키고, 괄호 블록(if ... ( ... ))이 통째로 깨진다.
+# 실제로 이것 때문에 Windows 런처가 열리지 않았다.
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+
 *.py   text eol=lf
 *.js   text eol=lf
 *.html text eol=lf
