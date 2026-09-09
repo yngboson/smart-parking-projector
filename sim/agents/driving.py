@@ -130,6 +130,8 @@ class PathFollower:
 
     def travelled(self, state: SelfState) -> float:
         """경로 시작점 기준으로 얼마나 진행했는지 (m)."""
+        if len(self._path) < 2:
+            return 0.0
         i, t = self._project(state.pose.position)
         return self._cum[i] + t * self._seg_len(i)
 

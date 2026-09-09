@@ -3,8 +3,8 @@
 `driving.py` 가 "선을 어떻게 따라가는가"(기술)라면, 여기는 **"지금 무엇을 할
 차례인가"**(판단)다. 상태 기계 하나가 그 판단 전부다:
 
-    ARRIVING → CRUISING → STAGING → REVERSING → PARKED → LEAVING → GONE
-      안내대기   유도선따라  주차면 지나쳐 정차  후진      주차중    출차     퇴장
+    ARRIVING → CRUISING → PARKING → PARKED → UNPARKING → LEAVING → GONE
+      안내대기   유도선따라  자리로(5초)  주차중   통로로(5초)   출차     퇴장
 
 **`DriverProfile` 은 이 파일에만 존재한다.** 관제는 이 타입의 존재조차 몰라야
 하며, 그것을 `tests/test_layer_isolation.py` 가 강제한다 (docs/DECISIONS.md D-001).
@@ -26,25 +26,22 @@ from typing import Sequence
 from sim.common.geometry import Pose, Vec2, angle_diff, offset_polyline
 from sim.common.ids import NodeId, SlotId
 from sim.common.lotmap import LotMap, Slot
-from sim.common.maneuver import ParkingManeuver, plan_reverse_parking
+from sim.common.maneuver import parked_pose
 from sim.common.messages import GuidanceView, Perception
 from sim.common.vehicle import ControlInput, SelfState, VehicleSpec
 from sim.agents.driving import DrivingSkill, PathFollower
 
-TURN_RADIUS_MARGIN = 1.15
-"""후진 주차 회전반경의 하한 = 최소 회전반경 × 이 값.
+PARK_DURATION = 5.0
+"""자리에 들어가고 나오는 데 걸리는 시간(초). 그동안 통로를 막는다.
 
-한계 반경으로 붙여 돌면 조향각이 계속 최대치라 조금만 어긋나도 복구가 안 된다.
-사람도 여유를 두고 돈다.
-
-실제 반경은 이보다 클 수 있다 — `Driver._parking_radius` 가 통로 폭에 맞춰 키운다.
+2단계에서 후진 주차를 물리로 풀었을 때 실측이 13.8초였다. 그보다 짧게 잡은 것은
+시연 화면이 늘어지지 않게 하기 위해서다 — 올릴수록 병목이 심해지는 것을 그대로 볼 수 있다.
 """
 
-EXIT_CLEARANCE = 1.30
-"""주차면에서 곧장 빠져나오는 직선 구간(m).
+PARKING_MARGIN = 1.5
+"""주차·출차 중인 앞차 뒤에 더 두는 간격(m).
 
-`common.maneuver.plan_reverse_parking` 의 기본값과 같아야 한다 — 회전반경을
-역산할 때 쓰기 때문이다.
+비상등을 켠 차는 곧 비켜줄 차가 아니다. 그 뒤에 바짝 붙으면 통로를 함께 막는다.
 """
 
 AISLE_PROBE = 80.0
@@ -52,25 +49,6 @@ AISLE_PROBE = 80.0
 
 눈에 들어온 자리는 언제나 지금 달리는 통로에 접해 있으므로(`_is_on_this_aisle`),
 진행 방향의 직선 하나면 진입 계산에 충분하다.
-"""
-
-MIN_STAGING_LEAD_IN = 3.0
-"""정차 지점 앞에 두는 직선 유도 구간의 최소 길이(m).
-
-이게 없으면 차가 정차 지점에 **위치는** 맞게 서지만 **방향이** 비뚤어진다.
-후진 주차는 시작 자세가 전부라 방향이 틀어지면 주차면을 벗어난다.
-"""
-
-STAGING_APPROACH_RATIO = 3.0
-"""차선에서 정차 지점까지 옆으로 벌어진 거리 × 이 값 = 접근 구간 길이.
-
-**통로가 넓어지면 이 구간도 길어져야 한다.** 주행 차선은 통로 중앙 근처에 있고
-후진 주차 정차 지점은 주차면 쪽 끝에 있는데, 통로가 넓을수록 그 둘이 멀어진다.
-14m 통로에서는 9.5m 나 벌어진다 — 그걸 3m 안에 붙으려면 차가 통로를 가로지르는
-급격한 사선을 그리게 되고, 반대편 차선까지 막아 통로가 굳는다.
-
-비율 3 이면 사선 기울기가 약 18° 로 완만해진다. 좁은 통로(7m)에서는 벌어진 거리가
-1.2m 뿐이라 결과가 최소값과 거의 같다 — 기존 동작을 바꾸지 않는다.
 """
 
 KEEP_RIGHT_RATIO = 0.225
@@ -173,10 +151,19 @@ class DriverPhase(str, Enum):
     """안내 없이 스스로 통로를 돌며 빈자리를 찾는다 (무안내 베이스라인, D-010)."""
 
     CRUISING = "cruising"
-    STAGING = "staging"
-    """주차면을 지나쳐 정차했다. 기어를 후진으로 넣는 중."""
 
-    REVERSING = "reversing"
+    PARKING = "parking"
+    """유도선 끝에 도착해 자리에 들어가는 중. **비상등을 켜고 통로를 막는다.**
+
+    실제 후진 조작을 물리로 풀지 않는다. 주차는 사람이 하는 일이고, 이 연구가
+    측정하려는 것은 조향 솜씨가 아니라 **그동안 통로가 얼마나 막히는가**다.
+    정해진 시간(`PARK_DURATION`) 동안 자리로 밀어 넣고, 뒤차는 그 시간을 고스란히
+    기다린다 — 병목은 그대로 재현되고 계산은 사라진다.
+    """
+
+    UNPARKING = "unparking"
+    """자리에서 통로로 빠져나오는 중. 주차의 역순이며 마찬가지로 통로를 막는다."""
+
     PARKED = "parked"
     LEAVING = "leaving"
     GONE = "gone"
@@ -234,7 +221,6 @@ class Driver:
     target_slot: SlotId | None = None
 
     _follower: PathFollower = field(init=False)
-    _maneuver: ParkingManeuver | None = field(default=None, init=False)
     rng: random.Random = field(default_factory=random.Random)
     """이탈 판정용 난수. 월드가 차량마다 시드를 심어 재현성을 지킨다."""
 
@@ -242,6 +228,9 @@ class Driver:
     _stalled_since: float | None = field(default=None, init=False)
     _keep_right: float = field(default=0.0, init=False)
     _min_ahead: float = field(default=MIN_TEMPTATION_AHEAD, init=False)
+    _script: tuple[float, Pose, Pose] | None = field(default=None, init=False)
+    """(시작 시각, 시작 자세, 끝 자세). 주차·출차 동작을 시간으로 밀어붙인다."""
+
     _exit_gate: tuple[Vec2, Vec2] | None = field(default=None, init=False)
     """출구 정지선 (위치, 나가는 방향)."""
     _lane: list[Vec2] = field(default_factory=list, init=False)
@@ -296,28 +285,17 @@ class Driver:
         보고 가므로 계산할 이유가 없다 — 그리고 이렇게 물어보면 월드가
         `compliance` 를 직접 읽지 않아도 된다.
         """
-        if self.phase in (DriverPhase.STAGING, DriverPhase.SEEKING):
-            return True     # 후진 직전의 마지막 확인, 그리고 무안내 탐색
+        if self.phase is DriverPhase.SEEKING:
+            return True     # 무안내 탐색 — 눈으로 자리를 찾는다
         if self.self_directed and self.phase is DriverPhase.ARRIVING:
             return True     # 첫 틱부터 눈을 뜨고 들어온다
         return self.profile.compliance < 1.0 and self.phase is DriverPhase.CRUISING
 
-    def park_in(self, slot: Slot, approach_heading: float) -> Pose:
-        """이미 주차를 마친 상태로 시작한다. 시작부터 붐비는 주차장을 만들 때 쓴다.
-
-        나갈 때 쓸 궤적까지 여기서 만들어 둔다. 그게 없으면 이 차만 주차면에서
-        통로 건너편으로 곧장 나가려 해서 교통이 엉킨다 (docs/DECISIONS.md D-012).
-        """
-        self._maneuver = plan_reverse_parking(
-            slot_center=slot.center,
-            slot_heading=slot.heading,
-            approach_heading=approach_heading,
-            rear_axle_to_center=self.spec.rear_axle_to_center,
-            turn_radius=self.spec.min_turn_radius * TURN_RADIUS_MARGIN,
-        )
+    def park_in(self, slot: Slot, approach_heading: float = 0.0) -> Pose:
+        """이미 주차를 마친 상태로 시작한다. 시작부터 붐비는 주차장을 만들 때 쓴다."""
         self.target_slot = slot.id
         self.phase = DriverPhase.PARKED
-        return self._maneuver.final
+        return parked_pose(slot.center, slot.heading, self.spec.rear_axle_to_center)
 
     # ── 매 틱의 판단 ──────────────────────────────────────────────
 
@@ -326,10 +304,7 @@ class Driver:
 
         # 앞차든 교행 대기 정지선이든, 운전자에게는 "저기서 멈춰야 한다"는 하나의
         # 사실이다. 더 가까운 쪽에 맞춘다.
-        limit = self._speed_limit(
-            min(perception.pose_forward_clearance, perception.stop_distance),
-            impatient=self._is_stuck(t),
-        )
+        limit = self._speed_limit(perception, impatient=self._is_stuck(t))
 
         if self.phase is DriverPhase.ARRIVING:
             if perception.guidance is None:
@@ -345,16 +320,23 @@ class Driver:
         if self.phase is DriverPhase.CRUISING:
             return self._cruise(state, perception, limit)
 
-        if self.phase is DriverPhase.STAGING:
-            return self._shift_to_reverse(state, perception)
+        if self.phase is DriverPhase.PARKING:
+            if self._script_done(t):
+                self.phase = DriverPhase.PARKED
+            return self._halt()
 
-        if self.phase is DriverPhase.REVERSING:
-            return self._reverse(state)
+        if self.phase is DriverPhase.UNPARKING:
+            if self._script_done(t):
+                if not self._begin_exit(state):
+                    self.phase = DriverPhase.PARKED
+                    self._wants_to_leave = False
+            return self._halt()
 
         if self.phase is DriverPhase.PARKED:
-            if self._wants_to_leave and self._begin_exit(state):
-                return self._drive(state, limit)
+            if self._wants_to_leave:
+                self._start_unparking(t, state)
             return self._halt()
+
 
         if self.phase is DriverPhase.LEAVING:
             if self._has_left(state) or self._follower.is_finished(state):
@@ -392,7 +374,7 @@ class Driver:
         self._consider_defection(state, perception)
 
         if self._follower.is_finished(state):
-            self.phase = DriverPhase.STAGING
+            self._start_parking(perception.t, state)
             return self._halt()
 
         return self._drive(state, limit)
@@ -578,85 +560,82 @@ class Driver:
         if slot is None or len(self._lane) < 2:
             return False
 
-        maneuver = plan_reverse_parking(
-            slot_center=slot.center,
-            slot_heading=slot.heading,
-            approach_heading=self._approach,
-            rear_axle_to_center=self.spec.rear_axle_to_center,
-            turn_radius=self._parking_radius(slot, self._approach),
-        )
-        staging = maneuver.staging
-        lead_in = _lead_in_point(self._lane, staging)
-        path = _trim_before(self._lane, lead_in) + [lead_in, staging.position]
+        # 그 자리 옆까지 통로를 따라 간 뒤, 거기서 주차 동작으로 넘어간다.
+        stop = self._lane_point_beside(slot)
+        path = _trim_after(self._lane, stop) + [stop]
         if len(path) < 2:
             return False
 
-        self._maneuver = maneuver
         self._follower.set_path(path, gear=1)
         self.target_slot = slot_id
         self._defected = True
         return True
 
-    def _parking_radius(self, slot: Slot, approach: float) -> float:
-        """후진 주차에 쓸 회전반경. **정차 지점이 주행 차선 위에 오도록** 정한다.
-
-        고정 반경을 쓰면 통로가 넓어져도 차는 주차면 코앞에서만 꺾는다. 그러면
-        정차 지점이 주행 차선에서 멀찍이 떨어지고, 거기 붙으려고 차가 통로를
-        20m 넘게 사선으로 가로지른다 — 화면에서 터무니없이 큰 호로 보이고,
-        그동안 반대 차선까지 막는다.
-
-        실제 운전자는 **차선을 따라 직진하다가 그 자리에서** 후진해 들어간다.
-        통로가 넓으면 그만큼 크게 돌 뿐이다. 그 기하를 그대로 계산한다.
-
-        후진 궤적의 기하(`common.maneuver.plan_reverse_parking`)에서, 정차 지점이
-        주차면 중심으로부터 통로 쪽으로 떨어지는 거리는
-
-            -뒷축_차체중심_거리 + 주차면_탈출_직선 + 회전반경
-
-        이다. 이것이 주행 차선까지의 거리와 같아지는 반경을 구한다.
-        """
-        outward = (self.lot.node_pos(slot.access_node) - slot.center)
-        depth = outward.length              # 주차면 중심 → 통로 중심선
-        if depth <= 0.0:
-            return self.spec.min_turn_radius * TURN_RADIUS_MARGIN
-
-        # 주행 차선은 진행 방향의 오른쪽. 주차면이 그쪽이면 가깝고, 건너편이면 멀다.
-        right = Vec2.from_angle(approach - math.pi / 2)
-        lane = depth + right.dot(outward.normalized()) * self._keep_right
-
-        radius = lane + self.spec.rear_axle_to_center - EXIT_CLEARANCE
-        return max(self.spec.min_turn_radius * TURN_RADIUS_MARGIN, radius)
 
     def _walk_distance(self, point: Vec2) -> float:
         """건물 출입구까지의 도보 거리. 운전자도 출입구가 어디인지는 안다."""
         gates = self.lot.pedestrian_gates
         return min((point.distance_to(g) for g in gates), default=0.0)
 
-    def _shift_to_reverse(self, state: SelfState, perception: Perception) -> ControlInput:
-        """완전히 멈춘 뒤에만 후진으로 넣는다. 물리가 그것을 강제한다.
+    # ── 주차·출차 동작 (물리 대신 시간으로) ──────────────────────
 
-        후진을 시작하기 **직전에 한 번 더** 자리를 확인한다. 여기가 마지막 기회다 —
-        일단 들어가기 시작하면 남이 이미 있는 자리에 그대로 밀고 들어가게 된다.
-        관제가 자리를 잘못 줬든, 오는 동안 누가 먼저 차지했든, 눈으로 보면 안다.
+    def _start_parking(self, t: float, state: SelfState) -> None:
+        """유도선 끝에 닿았다. 비상등을 켜고 자리로 들어간다."""
+        slot = self.lot.slots.get(self.target_slot) if self.target_slot else None
+        if slot is None:
+            self.phase = DriverPhase.ARRIVING
+            return
+        final = parked_pose(slot.center, slot.heading, self.spec.rear_axle_to_center)
+        self._script = (t, state.pose, final)
+        self.phase = DriverPhase.PARKING
+
+    def _start_unparking(self, t: float, state: SelfState) -> None:
+        """자리에서 통로로 빠져나온다. 주차의 역순이며 마찬가지로 통로을 막는다."""
+        slot = self.lot.slots.get(self.target_slot) if self.target_slot else None
+        if slot is None:
+            self._wants_to_leave = False
+            return
+        out = self._lane_point_beside(slot)
+        self._script = (t, state.pose, Pose(out.x, out.y, self._approach))
+        self.phase = DriverPhase.UNPARKING
+
+    def _script_done(self, t: float) -> bool:
+        return self._script is None or t - self._script[0] >= PARK_DURATION
+
+    def scripted_pose(self, t: float) -> Pose | None:
+        """주차·출차 중이라면 지금 있어야 할 자세.
+
+        **물리를 풀지 않는다.** 주차는 사람이 하는 일이고, 이 연구가 재는 것은
+        조향 솜씨가 아니라 그동안 통로가 막히는 시간이다. 월드가 이 자세를 그대로
+        차에 씌운다 (`Simulation.step`).
         """
-        if self._abandon_if_taken(perception):
-            return self._halt()
-        if state.speed > 0.04 or self._maneuver is None:
-            return self._halt()
-        self._follower.set_path(self._maneuver.reverse_path, gear=-1)
-        self.phase = DriverPhase.REVERSING
-        return self._follower.control(state)
+        if self._script is None or not self.hazards:
+            return None
+        started, origin, target = self._script
+        u = min(1.0, max(0.0, (t - started) / PARK_DURATION))
+        u = u * u * (3.0 - 2.0 * u)          # 부드럽게 들어가고 부드럽게 선다
+        return Pose(
+            origin.x + (target.x - origin.x) * u,
+            origin.y + (target.y - origin.y) * u,
+            origin.theta + angle_diff(target.theta, origin.theta) * u,
+        )
 
-    def _reverse(self, state: SelfState) -> ControlInput:
-        """후진 중에는 앞차 때문에 멈추지 않는다.
+    @property
+    def hazards(self) -> bool:
+        """비상등. 자리에 들어가거나 나오는 동안 켠다 — 통로를 막고 있다는 표시."""
+        return self.phase in (DriverPhase.PARKING, DriverPhase.UNPARKING)
 
-        이미 통로를 막고 있고, 뒤차는 기다릴 수밖에 없다. 실제 주차장에서도
-        그렇고, 그 정체가 이 시뮬레이션이 재현해야 할 현상이다.
+    def _lane_point_beside(self, slot: Slot) -> Vec2:
+        """그 주차면 바로 옆, 주행 차선 위의 점.
+
+        차는 여기까지 통로를 따라 오고 여기서 자리로 들어간다. 나올 때도 여기로
+        나오므로 통로를 가로지르지 않는다.
         """
-        if self._follower.is_finished(state):
-            self.phase = DriverPhase.PARKED
-            return self._halt()
-        return self._follower.control(state)
+        node = self.lot.node_pos(slot.access_node)
+        along = Vec2.from_angle(self._approach)
+        right = Vec2(along.y, -along.x)
+        return node + right * self._keep_right
+
 
     def _begin_exit(self, state: SelfState) -> bool:
         """주차면에서 출구까지의 경로를 스스로 짠다.
@@ -677,42 +656,30 @@ class Driver:
     # ── 안내 수용 ─────────────────────────────────────────────────
 
     def _accept(self, guidance: GuidanceView) -> None:
-        """새 유도선을 받아 주행 경로와 후진 주차 궤적을 준비한다."""
-        # 바닥에 그려진 선을 **그대로** 따른다. 관제가 이미 주행 차선 위에 그렸다.
+        """새 유도선을 받는다. **바닥에 그려진 선을 그대로 따라간다.**
+
+        관제가 이미 주행 차선 위에 그렸으므로 운전자가 손볼 것이 없다 (D-021).
+        선 끝에 닿으면 그 자리에서 주차 동작으로 넘어간다.
+        """
         slot = self.lot.slots[guidance.target_slot]
         lane = _lane_part(guidance.polyline, slot.entry_point, slot.center)
-        approach = _approach_heading(lane, self.lot.node_pos(slot.access_node))
 
-        self._maneuver = plan_reverse_parking(
-            slot_center=slot.center,
-            slot_heading=slot.heading,
-            approach_heading=approach,
-            rear_axle_to_center=self.spec.rear_axle_to_center,
-            turn_radius=self._parking_radius(slot, approach),
-        )
-
-        staging = self._maneuver.staging
-        lead_in = _lead_in_point(lane, staging)
-        drive_path = _trim_before(lane, lead_in) + [lead_in, staging.position]
-
-        self._follower.set_path(drive_path, gear=1)
         self.target_slot = guidance.target_slot
         self._revision = guidance.revision
         self._lane = lane
-        self._approach = approach
+        self._approach = _approach_heading(lane, self.lot.node_pos(slot.access_node))
         self._target_walk = self._walk_distance(slot.center)
         self.phase = DriverPhase.CRUISING
 
+        if len(lane) >= 2:
+            self._follower.set_path(lane, gear=1)
+
+
     def _exit_path(self, state: SelfState) -> list[Vec2] | None:
-        """주차면 → 출구 경로.
+        """지금 있는 자리(통로)에서 출구까지.
 
-        **들어온 궤적을 그대로 되짚어 나간다.** 주차면에서 통로 건너편의 한 점으로
-        곧장 향하면, 통로를 사이에 두고 마주 보는 두 줄의 차가 같은 지점을 노리며
-        정면으로 만난다 — 통로가 그대로 굳는다. 실제로 그렇게 굳었다.
-
-        후진 주차 궤적(`ParkingManeuver.reverse_path`)을 뒤집으면 그것이 곧
-        전진 출차 궤적이다. 자전거 모델은 전·후진이 대칭이므로 들어온 길로는
-        반드시 나갈 수 있고, 그 끝(정차 지점)은 이미 통로 방향에 정렬돼 있다.
+        관제에게 묻지 않는다 — 나가는 길은 표지판을 보면 알 수 있고, 운전자가
+        관제의 경로 탐색을 호출하면 계층이 무너진다. 도면의 단순 최단경로만 쓴다.
         """
         if not self.lot.exit_nodes:
             return None
@@ -725,17 +692,12 @@ class Driver:
         nodes = [self.lot.node_pos(n) for n in route]
         lane = _run_past_exit(offset_polyline(nodes, self._keep_right))
 
-        # 정지선은 **비껴 달리기 전의** 노드 위치로 잡는다. 우측통행 오프셋이
-        # 들어간 경로 위 점으로 잡으면 판정 기준이 차선마다 달라진다.
+        # 정지선은 **비껴 달리기 전의** 노드 위치로 잡는다.
         if len(nodes) >= 2:
             self._exit_gate = (nodes[-1], (nodes[-1] - nodes[-2]).normalized())
 
-        if self._maneuver is None:
-            return [state.pose.position] + lane
+        return [state.pose.position] + lane
 
-        staging = self._maneuver.staging
-        ahead = _drop_behind(lane, staging.position, Vec2.from_angle(staging.theta))
-        return list(reversed(self._maneuver.reverse_path)) + (ahead or lane)
 
     def _has_left(self, state: SelfState) -> bool:
         """출구를 통과했는가. 차단기 앞에서 서지 않고 그대로 나간다."""
@@ -766,25 +728,36 @@ class Driver:
     def _is_stuck(self, t: float) -> bool:
         return self._stalled_since is not None and t - self._stalled_since >= STUCK_PATIENCE
 
-    def _speed_limit(self, clearance: float, impatient: bool = False) -> float | None:
-        """앞차까지의 여유 거리로부터 낼 수 있는 속도를 구한다.
+    def _speed_limit(self, perception: Perception, impatient: bool = False) -> float | None:
+        """지금 낼 수 있는 속도. 앞차와 정지선 중 더 급한 쪽에 맞춘다.
 
-        월드가 강제로 멈춰 세우는 것이 아니라 **운전자가 보고 스스로 줄인다.**
-        차간거리는 운전자의 행동이지 시뮬레이터의 기능이 아니다 (docs/HANDOFF.md 이슈 1).
+        **거리만 보지 않는다.** 같은 속도로 달리는 앞차 뒤에서는 그 속도로 따라가면
+        되고, 서 있는 차 뒤에서는 멈출 수 있어야 한다. 제동거리 관계식을 그대로 쓴다:
+
+            v = sqrt(v_앞차² + 2·a·여유)
+
+        **주차·출차 중인 앞차는 서 있는 것으로 친다.** 비상등을 켠 차는 곧 비켜줄
+        차가 아니라 한동안 통로를 막을 차다. 이 판단 하나가 주차장 병목을 만든다.
+
+        월드가 차를 세우는 것이 아니라 운전자가 보고 줄인다 — 차간거리는 사람의
+        행동이지 시뮬레이터의 기능이 아니다.
         """
+        clearance = min(perception.pose_forward_clearance, perception.stop_distance)
         if not math.isfinite(clearance):
             return None
-        if impatient:
+        if impatient or clearance <= 0.0:
+            # 겹쳤거나 오래 굳었다. 멈춰 있으면 서로를 영원히 막는다.
             return CREEP_SPEED
-        if clearance <= 0.0:
-            # 이미 상대와 겹쳐 버렸다. 여기서 완전히 멈추면 상대도 나 때문에 못
-            # 움직이고, 둘 다 영원히 굳는다 — 관측된 교착은 전부 이 상태였다.
-            # 실제 운전자는 이럴 때 아주 천천히 비집고 빠져나간다.
-            return CREEP_SPEED
-        gap = clearance - FOLLOW_GAP
+
+        parking_ahead = perception.lead_is_parking
+        lead = 0.0 if parking_ahead else max(0.0, perception.lead_speed)
+        margin = FOLLOW_GAP + (PARKING_MARGIN if parking_ahead else 0.0)
+
+        gap = clearance - margin
         if gap <= 0.0:
-            return 0.0
-        return math.sqrt(2.0 * self.spec.max_decel * COMFORT_DECEL_RATIO * gap)
+            return lead * 0.5
+        return math.sqrt(lead * lead + 2.0 * self.spec.max_decel * COMFORT_DECEL_RATIO * gap)
+
 
 
 # ── 폴리라인 손질 ────────────────────────────────────────────────
@@ -822,21 +795,6 @@ def _approach_heading(lane: Sequence[Vec2], access_pos: Vec2) -> float:
     return 0.0
 
 
-def _lead_in_point(lane: Sequence[Vec2], staging: Pose) -> Vec2:
-    """정차 지점으로 들어가기 시작할 지점.
-
-    주행 차선에서 정차 지점까지 옆으로 얼마나 벌어져 있는지를 재서, 그만큼
-    완만하게 붙을 수 있는 길이를 잡는다. 통로 폭에 따라 자동으로 따라간다.
-    """
-    lead = MIN_STAGING_LEAD_IN
-    if len(lane) >= 2:
-        direction = (lane[-1] - lane[-2]).normalized()
-        if direction.length > 1e-6:
-            sideways = abs((staging.position - lane[-1]).cross(direction))
-            lead = max(lead, sideways * STAGING_APPROACH_RATIO)
-    return staging.position - Vec2.from_angle(staging.theta) * lead
-
-
 def _run_past_exit(lane: Sequence[Vec2]) -> list[Vec2]:
     """출구 바깥으로 경로를 연장한다. 감속할 '끝'을 없애기 위해서다."""
     pts = list(lane)
@@ -857,24 +815,19 @@ def _drop_behind(points: Sequence[Vec2], origin: Vec2, direction: Vec2) -> list[
     return [p for p in points if (p - origin).dot(direction) > 0.0]
 
 
-def _trim_before(lane: Sequence[Vec2], lead_in: Vec2) -> list[Vec2]:
-    """정차 유도 구간과 겹치거나 그것을 지나친 통로 점들을 잘라낸다.
+def _trim_after(lane: Sequence[Vec2], stop: Vec2) -> list[Vec2]:
+    """정차 지점까지의 통로 구간만 남긴다.
 
-    자르지 않으면 경로가 뒤로 갔다가 다시 앞으로 오는 모양이 되고, Pure Pursuit 이
-    그 접힌 구간에서 방향을 잃는다.
+    **방향이 아니라 경로 순서로 자른다.** 유도선은 램프에서 시작해 통로를 여러 번
+    꺾으므로, 어느 한 구간의 방향으로 판정하면 이미 지나친 점이 남거나 필요한 점이
+    잘려 나간다. 정차 지점에 가장 가까운 점까지만 쓰는 것이 안전하다.
     """
     pts = list(lane)
     if len(pts) < 2:
         return pts
+    nearest = min(range(len(pts)), key=lambda i: pts[i].distance_to(stop))
+    return pts[: max(1, nearest)]
 
-    tail = pts[-1] - pts[-2]
-    if tail.length < 1e-6:
-        return pts
-    direction = tail.normalized()
-
-    while len(pts) >= 2 and (lead_in - pts[-1]).dot(direction) <= 0.0:
-        pts.pop()
-    return pts
 
 
 def steering_error(pose: Pose, path_heading: float) -> float:

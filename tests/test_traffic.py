@@ -40,6 +40,12 @@ def rest(x: float, y: float, theta: float, steer: float = 0.0) -> SelfState:
     return SelfState(pose=Pose(x, y, theta), speed=1.0, steer=steer, gear=1)
 
 
+def gap(me: SelfState, spec: VehicleSpec, *shapes) -> float:
+    """앞차까지의 거리만. `forward_clearance` 는 (거리, 앞차 번호)를 준다 —
+    간격은 앞차가 서 있는지 달리는지에 따라 달라져야 하므로 누구인지도 알아야 한다."""
+    return physics.forward_clearance(me, spec, list(shapes))[0]
+
+
 # ── 여유 거리 측정 ────────────────────────────────────────────────
 
 
@@ -48,24 +54,24 @@ def test_clearance_measures_the_gap_to_the_bumper_ahead() -> None:
     me = rest(0.0, 0.0, 0.0)
     ahead = footprint(Pose(10.0, 0.0, 0.0), spec)
 
-    gap = physics.forward_clearance(me, spec, [ahead])
+    reach = gap(me, spec, ahead)
     nose = spec.length - spec.rear_overhang
     tail = ahead[2].x  # 앞차의 뒤쪽 꼭짓점
-    assert gap == pytest.approx(tail - nose, abs=1e-6)
+    assert reach == pytest.approx(tail - nose, abs=1e-6)
 
 
 def test_nothing_ahead_means_unlimited_clearance() -> None:
     spec = VehicleSpec()
     me = rest(0.0, 0.0, 0.0)
     beside = footprint(Pose(10.0, 6.0, 0.0), spec)
-    assert math.isinf(physics.forward_clearance(me, spec, [beside]))
+    assert math.isinf(gap(me, spec, beside))
 
 
 def test_a_car_behind_does_not_block() -> None:
     spec = VehicleSpec()
     me = rest(0.0, 0.0, 0.0)
     behind = footprint(Pose(-10.0, 0.0, 0.0), spec)
-    assert math.isinf(physics.forward_clearance(me, spec, [behind]))
+    assert math.isinf(gap(me, spec, behind))
 
 
 def test_a_turning_car_does_not_brake_for_traffic_it_will_curve_away_from() -> None:
@@ -78,11 +84,11 @@ def test_a_turning_car_does_not_brake_for_traffic_it_will_curve_away_from() -> N
     turning = rest(0.0, 0.0, 0.0, steer=0.45)      # 좌회전 중
     straight_ahead = footprint(Pose(9.0, 0.0, 0.0), spec)
 
-    assert math.isinf(physics.forward_clearance(turning, spec, [straight_ahead])), (
+    assert math.isinf(gap(turning, spec, straight_ahead)), (
         "왼쪽으로 꺾고 있는데 정면의 차 때문에 멈췄습니다"
     )
     assert math.isfinite(
-        physics.forward_clearance(rest(0.0, 0.0, 0.0), spec, [straight_ahead])
+        gap(rest(0.0, 0.0, 0.0), spec, straight_ahead)
     ), "직진 중이라면 같은 차가 장애물이어야 합니다"
 
 
@@ -97,8 +103,8 @@ def test_a_turning_car_still_sees_traffic_on_its_arc() -> None:
     on_arc = Pose(
         radius * math.sin(angle), radius - radius * math.cos(angle), angle
     )
-    gap = physics.forward_clearance(turning, spec, [footprint(on_arc, spec)])
-    assert math.isfinite(gap) and gap < radius * angle
+    reach = gap(turning, spec, footprint(on_arc, spec))
+    assert math.isfinite(reach) and reach < radius * angle
 
 
 # ── 주차면 안의 차는 통로 장애물이 아니다 ─────────────────────────
@@ -119,8 +125,8 @@ def test_a_car_in_a_slot_is_not_an_obstacle_on_the_aisle(lot: LotMap) -> None:
         v = next(w for w in sim.vehicles if w.plate == plate)
         assert v.driver.phase in (
             DriverPhase.PARKED,
-            DriverPhase.REVERSING,
-            DriverPhase.STAGING,
+            DriverPhase.PARKING,
+            DriverPhase.UNPARKING,
             DriverPhase.LEAVING,
         ), f"{plate} 가 주차면 안에 있는데 상태가 {v.driver.phase}"
 
@@ -226,3 +232,92 @@ def test_a_car_pulling_out_does_not_trigger_the_neighbours_sensor(lot: LotMap) -
         )
     )
     assert sensors._slot_under(settled) == slot.id, "반듯이 댄 차를 못 읽습니다"
+
+
+# ── 주차 동작과 병목 ──────────────────────────────────────────────
+
+
+def test_parking_takes_the_scripted_time_and_lands_in_the_slot(lot: LotMap) -> None:
+    """유도선 끝에 닿으면 물리를 풀지 않고 **정해진 시간 안에** 자리로 들어간다.
+
+    주차는 사람이 하는 일이고, 이 연구가 재는 것은 조향 솜씨가 아니라 그동안
+    통로가 막히는 시간이다 (docs/DECISIONS.md D-022).
+    """
+    from sim.agents.driver import PARK_DURATION, Driver, DriverPhase
+    from sim.common.maneuver import parked_pose
+
+    slot = lot.slots_in_row("C")[5]
+    driver = Driver(spec=VehicleSpec(), lot=lot)
+    driver.target_slot = slot.id
+    driver._approach = 0.0
+
+    beside = driver._lane_point_beside(slot)
+    state = SelfState(pose=Pose(beside.x, beside.y, 0.0), speed=0.0, steer=0.0, gear=1)
+    driver._start_parking(0.0, state)
+
+    assert driver.phase is DriverPhase.PARKING
+    assert driver.hazards, "주차 중에는 비상등을 켜야 한다 — 통로를 막고 있다는 표시"
+
+    assert driver.scripted_pose(PARK_DURATION * 0.5) is not None
+    done = driver.scripted_pose(PARK_DURATION)
+    assert done is not None
+
+    target = parked_pose(slot.center, slot.heading, VehicleSpec().rear_axle_to_center)
+    assert done.position.distance_to(target.position) < 1e-6
+    assert abs(done.theta - target.theta) < 1e-6
+
+    assert not driver._script_done(PARK_DURATION * 0.5)
+    assert driver._script_done(PARK_DURATION + 0.01)
+
+
+def test_a_car_keeps_more_room_behind_one_that_is_parking(lot: LotMap) -> None:
+    """앞차가 비상등을 켰으면 곧 비켜줄 차가 아니다. 더 띄우고 더 늦춘다.
+
+    **이 판단 하나가 주차장 병목을 만든다.** 앞차가 같은 속도로 달리는 중이면
+    바짝 붙어도 되지만, 자리에 들어가는 중이면 그 시간 내내 통로가 막힌다.
+    """
+    from sim.agents.driver import Driver
+    from sim.common.messages import Perception
+
+    driver = Driver(spec=VehicleSpec(), lot=lot)
+
+    def limit(clearance: float, lead_speed: float, parking: bool) -> float:
+        return driver._speed_limit(
+            Perception(
+                t=0.0,
+                pose_forward_clearance=clearance,
+                lead_speed=lead_speed,
+                lead_is_parking=parking,
+            )
+        )
+
+    moving = limit(12.0, 6.0, False)
+    stopped = limit(12.0, 0.0, False)
+    parking = limit(12.0, 0.0, True)
+
+    assert moving > stopped, "달리는 앞차 뒤에서는 더 빨리 갈 수 있어야 한다"
+    assert parking < stopped, "주차 중인 앞차 뒤에서는 더 늦춰야 한다"
+
+
+def test_parking_time_throttles_the_lot(lot: LotMap) -> None:
+    """주차가 오래 걸릴수록 처리량이 떨어져야 한다 — 그게 재현하려는 병목이다."""
+    import sim.agents.driver as driver_module
+
+    original = driver_module.PARK_DURATION
+    parked = {}
+    try:
+        for seconds in (2.0, 20.0):
+            driver_module.PARK_DURATION = seconds
+            sim = Simulation(
+                lot,
+                config=SimConfig(seed=0, arrival_rate=0.3, dwell_mean=300.0, prefill=0.6),
+            )
+            for frame in sim.run(240.0):
+                pass
+            parked[seconds] = frame.kpi["parked_total"]
+    finally:
+        driver_module.PARK_DURATION = original
+
+    assert parked[20.0] < parked[2.0], (
+        f"주차가 10배 오래 걸리는데 처리량이 그대로다 ({parked})"
+    )

@@ -251,6 +251,7 @@ class Simulation:
         # 첫 몇 초 동안 있지도 않은 강탈이 쏟아진다.
         if self.vehicles:
             self.control.on_events(self.sensors.prime(0.0, self.vehicles))
+        self._by_plate: dict[PlateId, WorldVehicle] = {}
         self._pending: list = []
         """아직 발행하지 않은 추론 사건들. 프레임을 솎아내도 잃지 않는다."""
 
@@ -282,6 +283,7 @@ class Simulation:
         self.projector.apply(commands, self.t)
 
         # ④ 운전자들이 각자 보고 판단하고, 물리가 그 결과를 적분한다
+        self._by_plate = {v.plate: v for v in self.vehicles}
         self.traffic.update(self.t, self.vehicles)
 
         # 세워둔 차는 어떤 입력을 받아도 답이 같다. 만차에서는 차량의 8할이
@@ -297,7 +299,14 @@ class Simulation:
                 continue
             perception = self._perceive(v, (plates, shapes, centres))
             cmd = v.driver.decide(self.t, v.state, perception)
-            v.state = physics.step(v.state, v.spec, cmd, dt)
+
+            # 주차·출차 중에는 물리를 풀지 않는다. 주차는 사람이 하는 일이고,
+            # 이 연구가 재는 것은 조향 솜씨가 아니라 그동안 막히는 시간이다.
+            scripted = v.driver.scripted_pose(self.t)
+            if scripted is not None:
+                v.state = SelfState(pose=scripted, speed=0.0, steer=0.0, gear=0)
+            else:
+                v.state = physics.step(v.state, v.spec, cmd, dt)
             v.refresh()
             self.projector.advance(v.plate, v.state.pose.position)
             self._update_schedule(v)
@@ -310,16 +319,19 @@ class Simulation:
     # ── 지각 ──────────────────────────────────────────────────────
 
     def _perceive(self, v: WorldVehicle, shapes) -> Perception:
+        gap, leader = self._clearance(v, shapes)
         return Perception(
             t=self.t,
-            pose_forward_clearance=self._clearance(v, shapes),
+            pose_forward_clearance=gap,
+            lead_speed=leader.state.speed if leader is not None else 0.0,
+            lead_is_parking=leader.driver.hazards if leader is not None else False,
             stop_distance=self.traffic.stop_distance(v),
             visible_slots=self._visible_slots(v),
             guidance=self.projector.view(v.plate),
         )
 
-    def _clearance(self, v: WorldVehicle, shapes) -> float:
-        """앞차까지의 여유 거리. 막혀 있지 않으면 무한대.
+    def _clearance(self, v: WorldVehicle, shapes) -> tuple[float, "WorldVehicle | None"]:
+        """(앞차까지의 여유 거리, 그 앞차). 막혀 있지 않으면 (무한대, None).
 
         **주차면 안에 들어가 있는 차는 세지 않는다.** 통로가 도로이고 주차면은
         도로 밖이다. 옆자리에 세워진 차를 장애물로 치면, 주차면에서 나오려는 차가
@@ -332,12 +344,20 @@ class Simulation:
         plates, corners, centres = shapes
         keep_shapes = []
         keep_centres = []
+        keep_index = []
         for i, w in enumerate(plates):
             if w == v.plate or w in parked:
                 continue
             keep_shapes.append(corners[i])
             keep_centres.append(centres[i])
-        return physics.forward_clearance(v.state, v.spec, keep_shapes, keep_centres)
+            keep_index.append(i)
+
+        gap, which = physics.forward_clearance(
+            v.state, v.spec, keep_shapes, keep_centres
+        )
+        if which < 0:
+            return gap, None
+        return gap, self._by_plate.get(plates[keep_index[which]])
 
     def _visible_slots(self, v: WorldVehicle) -> tuple[VisibleSlot, ...]:
         """운전자가 육안으로 확인한 주차면들.
@@ -663,8 +683,8 @@ _VIEW_STATE = {
     DriverPhase.ARRIVING: "waiting",
     DriverPhase.SEEKING: "searching",
     DriverPhase.CRUISING: "driving",
-    DriverPhase.STAGING: "parking",
-    DriverPhase.REVERSING: "parking",
+    DriverPhase.PARKING: "parking",
+    DriverPhase.UNPARKING: "parking",
     DriverPhase.PARKED: "parked",
     DriverPhase.LEAVING: "leaving",
     DriverPhase.GONE: "leaving",

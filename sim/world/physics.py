@@ -111,10 +111,14 @@ STRAIGHT_STEER = 0.02
 def forward_clearance(
     behind: SelfState,
     spec: VehicleSpec,
-    obstacles: Iterable[Sequence[Vec2]],
+    obstacles: Sequence[Sequence[Vec2]],
     centres: Sequence[Vec2] | None = None,
-) -> float:
-    """내 앞범퍼에서 앞차까지 남은 거리. 막힌 것이 없으면 무한대.
+) -> tuple[float, int]:
+    """(내 앞범퍼에서 앞차까지 남은 거리, 그 앞차의 번호). 없으면 (inf, -1).
+
+    **누가 앞차인지도 함께 돌려준다.** 거리만으로는 얼마나 떨어져 따라갈지 정할 수
+    없다 — 앞차가 같은 속도로 달리는 중인지, 주차하느라 한동안 서 있을 차인지에
+    따라 필요한 간격이 다르다 (`agents.driver.Driver._speed_limit`).
 
     두 가지를 제대로 봐야 값이 쓸모 있다.
 
@@ -149,6 +153,7 @@ def forward_clearance(
     cutoff = (MAX_LOOK + spec.length) ** 2
 
     nearest = MAX_LOOK
+    leader = -1
     for i, corners in enumerate(obstacles):
         if centres is not None:
             c0 = centres[i]
@@ -161,8 +166,11 @@ def forward_clearance(
             d = _path_distance(u, w, radius, half)
             if d is not None and d < nearest:
                 nearest = d
+                leader = i
 
-    return math.inf if nearest >= MAX_LOOK else nearest - nose
+    if nearest >= MAX_LOOK:
+        return math.inf, -1
+    return nearest - nose, leader
 
 
 def _path_distance(u: float, w: float, radius: float | None, half: float) -> float | None:
