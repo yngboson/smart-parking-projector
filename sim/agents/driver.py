@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Sequence
 
-from sim.common.geometry import Pose, Vec2, angle_diff
+from sim.common.geometry import Pose, Vec2, angle_diff, offset_polyline
 from sim.common.ids import NodeId, SlotId
 from sim.common.lotmap import LotMap, Slot
 from sim.common.maneuver import ParkingManeuver, plan_reverse_parking
@@ -32,10 +32,26 @@ from sim.common.vehicle import ControlInput, SelfState, VehicleSpec
 from sim.agents.driving import DrivingSkill, PathFollower
 
 TURN_RADIUS_MARGIN = 1.15
-"""후진 주차에 쓸 회전반경 = 최소 회전반경 × 이 값.
+"""후진 주차 회전반경의 하한 = 최소 회전반경 × 이 값.
 
 한계 반경으로 붙여 돌면 조향각이 계속 최대치라 조금만 어긋나도 복구가 안 된다.
 사람도 여유를 두고 돈다.
+
+실제 반경은 이보다 클 수 있다 — `Driver._parking_radius` 가 통로 폭에 맞춰 키운다.
+"""
+
+EXIT_CLEARANCE = 1.30
+"""주차면에서 곧장 빠져나오는 직선 구간(m).
+
+`common.maneuver.plan_reverse_parking` 의 기본값과 같아야 한다 — 회전반경을
+역산할 때 쓰기 때문이다.
+"""
+
+AISLE_PROBE = 80.0
+"""무안내 탐색에서 '지금 달리는 통로'를 대신할 직선 구간의 길이(m).
+
+눈에 들어온 자리는 언제나 지금 달리는 통로에 접해 있으므로(`_is_on_this_aisle`),
+진행 방향의 직선 하나면 진입 계산에 충분하다.
 """
 
 MIN_STAGING_LEAD_IN = 3.0
@@ -71,9 +87,6 @@ KEEP_RIGHT_RATIO = 0.225
 관제가 그리는 유도선은 통로 중앙에 남는다. 선을 정확히 밟고 가는 것이 아니라
 선을 보고 자기 차선을 잡는 것이 사람이 하는 일이기 때문이다.
 """
-
-FALLBACK_AISLE_WIDTH = 6.0
-"""도면에 통로 정보가 없을 때 가정하는 폭(m)."""
 
 EXIT_RUN_OUT = 30.0
 """출구 노드를 지나 이만큼 더 이어 두는 가상의 경로(m).
@@ -156,6 +169,9 @@ class DriverPhase(str, Enum):
     ARRIVING = "arriving"
     """아직 안내를 못 받았다. 입구에서 기다린다."""
 
+    SEEKING = "seeking"
+    """안내 없이 스스로 통로를 돌며 빈자리를 찾는다 (무안내 베이스라인, D-010)."""
+
     CRUISING = "cruising"
     STAGING = "staging"
     """주차면을 지나쳐 정차했다. 기어를 후진으로 넣는 중."""
@@ -206,6 +222,14 @@ class Driver:
     lot: LotMap
     profile: DriverProfile = field(default_factory=DriverProfile)
 
+    self_directed: bool = False
+    """안내가 없을 때 스스로 찾아다닐 것인가.
+
+    **무안내 베이스라인(D-010)의 스위치다.** 평소에는 꺼 둔다 — 유도선 시스템이
+    도는 중이라면 안내를 못 받은 차는 잠깐 기다리는 것이 맞고, 제멋대로 돌아다니면
+    관제의 성능을 측정할 수 없다.
+    """
+
     phase: DriverPhase = DriverPhase.ARRIVING
     target_slot: SlotId | None = None
 
@@ -231,7 +255,7 @@ class Driver:
 
     def __post_init__(self) -> None:
         self._follower = PathFollower(self.spec, self.profile.skill)
-        self._keep_right = _keep_right_offset(self.lot)
+        self._keep_right = self.lot.travel_lane_offset
         self._min_ahead = max(
             MIN_TEMPTATION_AHEAD,
             self.profile.skill.cruise_speed * TEMPTATION_LEAD_SECONDS,
@@ -255,6 +279,16 @@ class Driver:
         return self.phase is DriverPhase.PARKED
 
     @property
+    def is_idle(self) -> bool:
+        """세워두고 아무 생각 없는 상태인가.
+
+        주차를 마쳤고 아직 나갈 때가 아니면 이 운전자는 어떤 입력을 받아도 같은
+        답(정지)을 낸다. 만차 주차장에서는 차량의 8할이 여기 해당하므로, 이걸
+        건너뛰는 것만으로 시뮬레이션이 눈에 띄게 빨라진다.
+        """
+        return self.phase is DriverPhase.PARKED and not self._wants_to_leave
+
+    @property
     def watches_for_slots(self) -> bool:
         """빈자리를 두리번거리는가.
 
@@ -262,8 +296,10 @@ class Driver:
         보고 가므로 계산할 이유가 없다 — 그리고 이렇게 물어보면 월드가
         `compliance` 를 직접 읽지 않아도 된다.
         """
-        if self.phase is DriverPhase.STAGING:
-            return True     # 후진 직전의 마지막 확인 — 성향과 무관하다
+        if self.phase in (DriverPhase.STAGING, DriverPhase.SEEKING):
+            return True     # 후진 직전의 마지막 확인, 그리고 무안내 탐색
+        if self.self_directed and self.phase is DriverPhase.ARRIVING:
+            return True     # 첫 틱부터 눈을 뜨고 들어온다
         return self.profile.compliance < 1.0 and self.phase is DriverPhase.CRUISING
 
     def park_in(self, slot: Slot, approach_heading: float) -> Pose:
@@ -297,8 +333,14 @@ class Driver:
 
         if self.phase is DriverPhase.ARRIVING:
             if perception.guidance is None:
-                return self._halt()
-            self._accept(perception.guidance)
+                if not self.self_directed:
+                    return self._halt()
+                self.phase = DriverPhase.SEEKING
+            else:
+                self._accept(perception.guidance)
+
+        if self.phase is DriverPhase.SEEKING:
+            return self._seek(state, perception, limit)
 
         if self.phase is DriverPhase.CRUISING:
             return self._cruise(state, perception, limit)
@@ -354,6 +396,98 @@ class Driver:
             return self._halt()
 
         return self._drive(state, limit)
+
+    # ── 무안내 탐색 (베이스라인) ──────────────────────────────────
+
+    def _seek(
+        self, state: SelfState, perception: Perception, limit: float | None
+    ) -> ControlInput:
+        """유도선 없이 통로를 돌며 눈으로 자리를 찾는다.
+
+        **이것이 이 시스템이 없을 때의 세상이다** (D-010). 운전자는 어디가 비었는지
+        모른 채 통로를 훑고, 눈에 들어온 자리 중 자기 기준으로 가장 나은 것을 잡는다.
+        같은 시드로 안내 모드와 나란히 돌리면 "왜 이 시스템이 필요한가"가 숫자로 나온다.
+
+        판단 기준은 이탈(`_consider_defection`)과 **같은 저울**을 쓴다. 비협조
+        운전자가 안내를 무시할 때 쓰는 그 기준이, 안내가 아예 없을 때는 유일한 기준이 된다.
+        """
+        if perception.guidance is not None:
+            self._accept(perception.guidance)      # 안내가 켜졌다면 따른다
+            return self._drive(state, limit)
+
+        if self._take_best_visible(state, perception):
+            # 자리를 잡았으면 탐색은 끝이다. 이제부터는 안내를 받은 차와 똑같이
+            # 그 자리로 향한다 — 정차 · 후진 · 주차 절차가 그대로 이어진다.
+            self.phase = DriverPhase.CRUISING
+            return self._drive(state, limit)
+
+        if len(self._follower._path) < 2 or self._follower.is_finished(state):
+            if not self._wander(state):
+                return self._halt()
+        return self._drive(state, limit)
+
+    def _take_best_visible(self, state: SelfState, perception: Perception) -> bool:
+        """눈에 들어온 자리 중 가장 나은 것을 잡는다. 없으면 계속 돈다."""
+        if not perception.visible_slots or len(self._lane) < 2:
+            return False
+
+        ct = math.cos(state.pose.theta)
+        st = math.sin(state.pose.theta)
+        best: SlotId | None = None
+        best_gain = -math.inf
+
+        for vs in perception.visible_slots:
+            if not vs.looks_free or vs.slot_id in self._considered:
+                continue
+            d = vs.center - state.pose.position
+            ahead = d.x * ct + d.y * st
+            if ahead < self._min_ahead or not self._is_on_this_aisle(vs.slot_id, state):
+                continue
+
+            self._considered.add(vs.slot_id)
+            # 가까이서 보이고 덜 걸어도 되는 자리가 좋다 — 운전자 자신의 저울이다.
+            gain = -ahead - self.profile.walk_weight * vs.walk_distance
+            if gain > best_gain:
+                best_gain, best = gain, vs.slot_id
+
+        if best is None:
+            return False
+
+        # 지금 달리는 통로를 기준으로 진입한다. 순회 경로 전체(여러 통로를 잇는
+        # 경로)를 기준으로 삼으면 진입 구간을 잘라내는 계산이 엉킨다 — 실제로
+        # 그것 때문에 무안내 모드에서 한 대도 주차하지 못했다.
+        here = state.pose.position
+        forward = Vec2.from_angle(state.pose.theta)
+        self._lane = [here - forward * 5.0, here + forward * AISLE_PROBE]
+        self._approach = state.pose.theta
+        return self._divert(best)
+
+    def _wander(self, state: SelfState) -> bool:
+        """다음으로 훑어볼 통로를 정한다.
+
+        건물에 가까운 쪽부터 본다. 실제로도 사람은 좋은 자리부터 뒤지고, 그래야
+        '안내가 없으면 인기 구역만 붐빈다'는 현상이 재현된다.
+        """
+        here = self._nearest_node(state.pose.position)
+        candidates = [
+            s for s in self.lot.slots.values() if s.access_node != here
+        ]
+        if not candidates:
+            return False
+
+        # 도보거리가 짧은 쪽에 가중치를 준다
+        candidates.sort(key=lambda s: self.lot.walk_distance(s.id))
+        pick = candidates[self.rng.randrange(max(1, len(candidates) // 3))]
+
+        route = self.lot.shortest_path(here, pick.access_node)
+        if route is None or len(route) < 2:
+            return False
+
+        lane = offset_polyline([self.lot.node_pos(n) for n in route], self._keep_right)
+        self._lane = lane
+        self._approach = _approach_heading(lane, self.lot.node_pos(pick.access_node))
+        self._follower.set_path([state.pose.position] + lane, gear=1)
+        return True
 
     # ── 이탈 ──────────────────────────────────────────────────────
 
@@ -449,7 +583,7 @@ class Driver:
             slot_heading=slot.heading,
             approach_heading=self._approach,
             rear_axle_to_center=self.spec.rear_axle_to_center,
-            turn_radius=self.spec.min_turn_radius * TURN_RADIUS_MARGIN,
+            turn_radius=self._parking_radius(slot, self._approach),
         )
         staging = maneuver.staging
         lead_in = _lead_in_point(self._lane, staging)
@@ -462,6 +596,36 @@ class Driver:
         self.target_slot = slot_id
         self._defected = True
         return True
+
+    def _parking_radius(self, slot: Slot, approach: float) -> float:
+        """후진 주차에 쓸 회전반경. **정차 지점이 주행 차선 위에 오도록** 정한다.
+
+        고정 반경을 쓰면 통로가 넓어져도 차는 주차면 코앞에서만 꺾는다. 그러면
+        정차 지점이 주행 차선에서 멀찍이 떨어지고, 거기 붙으려고 차가 통로를
+        20m 넘게 사선으로 가로지른다 — 화면에서 터무니없이 큰 호로 보이고,
+        그동안 반대 차선까지 막는다.
+
+        실제 운전자는 **차선을 따라 직진하다가 그 자리에서** 후진해 들어간다.
+        통로가 넓으면 그만큼 크게 돌 뿐이다. 그 기하를 그대로 계산한다.
+
+        후진 궤적의 기하(`common.maneuver.plan_reverse_parking`)에서, 정차 지점이
+        주차면 중심으로부터 통로 쪽으로 떨어지는 거리는
+
+            -뒷축_차체중심_거리 + 주차면_탈출_직선 + 회전반경
+
+        이다. 이것이 주행 차선까지의 거리와 같아지는 반경을 구한다.
+        """
+        outward = (self.lot.node_pos(slot.access_node) - slot.center)
+        depth = outward.length              # 주차면 중심 → 통로 중심선
+        if depth <= 0.0:
+            return self.spec.min_turn_radius * TURN_RADIUS_MARGIN
+
+        # 주행 차선은 진행 방향의 오른쪽. 주차면이 그쪽이면 가깝고, 건너편이면 멀다.
+        right = Vec2.from_angle(approach - math.pi / 2)
+        lane = depth + right.dot(outward.normalized()) * self._keep_right
+
+        radius = lane + self.spec.rear_axle_to_center - EXIT_CLEARANCE
+        return max(self.spec.min_turn_radius * TURN_RADIUS_MARGIN, radius)
 
     def _walk_distance(self, point: Vec2) -> float:
         """건물 출입구까지의 도보 거리. 운전자도 출입구가 어디인지는 안다."""
@@ -514,10 +678,9 @@ class Driver:
 
     def _accept(self, guidance: GuidanceView) -> None:
         """새 유도선을 받아 주행 경로와 후진 주차 궤적을 준비한다."""
+        # 바닥에 그려진 선을 **그대로** 따른다. 관제가 이미 주행 차선 위에 그렸다.
         slot = self.lot.slots[guidance.target_slot]
-        lane = _keep_right(
-            _lane_part(guidance.polyline, slot.entry_point, slot.center), self._keep_right
-        )
+        lane = _lane_part(guidance.polyline, slot.entry_point, slot.center)
         approach = _approach_heading(lane, self.lot.node_pos(slot.access_node))
 
         self._maneuver = plan_reverse_parking(
@@ -525,7 +688,7 @@ class Driver:
             slot_heading=slot.heading,
             approach_heading=approach,
             rear_axle_to_center=self.spec.rear_axle_to_center,
-            turn_radius=self.spec.min_turn_radius * TURN_RADIUS_MARGIN,
+            turn_radius=self._parking_radius(slot, approach),
         )
 
         staging = self._maneuver.staging
@@ -560,7 +723,7 @@ class Driver:
             return None
 
         nodes = [self.lot.node_pos(n) for n in route]
-        lane = _run_past_exit(_keep_right(nodes, self._keep_right))
+        lane = _run_past_exit(offset_polyline(nodes, self._keep_right))
 
         # 정지선은 **비껴 달리기 전의** 노드 위치로 잡는다. 우측통행 오프셋이
         # 들어간 경로 위 점으로 잡으면 판정 기준이 차선마다 달라진다.
@@ -641,39 +804,6 @@ def _lane_part(
         if pts and pts[-1].distance_to(anchor) < 1e-6:
             pts.pop()
     return pts
-
-
-def _keep_right_offset(lot: LotMap) -> float:
-    """이 주차장에서 오른쪽으로 얼마나 붙어 달릴 것인가(m)."""
-    widths = [a.width for a in lot.aisles]
-    return (min(widths) if widths else FALLBACK_AISLE_WIDTH) * KEEP_RIGHT_RATIO
-
-
-def _keep_right(points: Sequence[Vec2], offset: float) -> list[Vec2]:
-    """폴리라인을 진행 방향 기준 오른쪽으로 민다.
-
-    꼭짓점에서는 앞뒤 구간의 이등분선 방향으로 민다. 각 구간을 따로 밀면 코너에서
-    선이 끊어진다.
-    """
-    pts = list(points)
-    if len(pts) < 2 or offset == 0.0:
-        return pts
-
-    out: list[Vec2] = []
-    last = len(pts) - 1
-    for i, p in enumerate(pts):
-        if i == 0:
-            d = (pts[1] - pts[0]).normalized()
-        elif i == last:
-            d = (pts[last] - pts[last - 1]).normalized()
-        else:
-            a = (pts[i] - pts[i - 1]).normalized()
-            b = (pts[i + 1] - pts[i]).normalized()
-            d = (a + b).normalized()
-            if d.length < 1e-6:      # 되돌아가는 꼭짓점 — 앞 구간 기준으로 민다
-                d = a
-        out.append(p + Vec2(d.y, -d.x) * offset)
-    return out
 
 
 def _approach_heading(lane: Sequence[Vec2], access_pos: Vec2) -> float:

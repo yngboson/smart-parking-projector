@@ -103,6 +103,11 @@ class VehicleView(Protocol):
     vehicle_class: VehicleClass
     spec: VehicleSpec
     state: SelfState
+    center: Vec2
+    """차체 중심. 매 틱 한 번만 계산된 값이다 (`WorldVehicle.refresh`)."""
+
+    version: int
+    """자세가 바뀔 때마다 올라간다. 안 바뀐 차는 다시 조회하지 않는다."""
 
 
 class SensorSuite:
@@ -127,6 +132,21 @@ class SensorSuite:
         self._occupancy: dict[SlotId, PlateId | None] = {}
         self._candidate: dict[SlotId, tuple[PlateId, float]] = {}
         self._last_node: dict[PlateId, NodeId] = {}
+        self._slot_cache: dict[PlateId, tuple[int, SlotId | None, SlotId | None]] = {}
+        """번호판 → (자세 버전, 좁은 상자 결과, 넓은 상자 결과).
+
+        세워둔 차는 자세가 그대로이므로 주차면 조회 결과도 그대로다. 만차에서는
+        차량의 8할이 세워져 있어, 이 캐시 하나가 센서 비용의 대부분을 없앤다.
+        """
+
+    def _slots_for(self, v: "VehicleView") -> tuple[SlotId | None, SlotId | None]:
+        """(좁은 상자, 넓은 상자) 조회 결과. 자세가 그대로면 캐시를 쓴다."""
+        hit = self._slot_cache.get(v.plate)
+        if hit is not None and hit[0] == v.version:
+            return hit[1], hit[2]
+        tight, wide = self._slot_under(v), self._slot_area(v)
+        self._slot_cache[v.plate] = (v.version, tight, wide)
+        return tight, wide
 
     # ── 관측 ──────────────────────────────────────────────────────
 
@@ -186,6 +206,7 @@ class SensorSuite:
         for p in gone:
             del self._present[p]
             self._last_node.pop(p, None)
+            self._slot_cache.pop(p, None)
         return [VehicleExited(t=t, plate=p) for p in sorted(gone)]
 
     # ── 주차면 점유 센서 ───────────────────────────────────────────
@@ -195,13 +216,11 @@ class SensorSuite:
         present: dict[SlotId, set[PlateId]] = {}  # 영역 안의 차 — 점유 **유지** 판정
 
         for v in vehicles:
-            area = self._slot_area(v)
+            tight, area = self._slots_for(v)
             if area is not None:
                 present.setdefault(area, set()).add(v.plate)
-            if v.state.speed <= SETTLED_SPEED:
-                sid = self._slot_under(v)
-                if sid is not None:
-                    settled[sid] = v.plate
+            if v.state.speed <= SETTLED_SPEED and tight is not None:
+                settled[tight] = v.plate
 
         out: list[SensorEvent] = []
 
@@ -241,7 +260,7 @@ class SensorSuite:
         네 꼭짓점이 모두 들어갔는지까지 보지는 않는다. 실제 점유 센서는 자기
         구획 위에 쇳덩이가 있는지만 알지, 반듯하게 댔는지는 모른다.
         """
-        center = body_center(v.state.pose, v.spec)
+        center = v.center
         for sid in cells_around(self._slot_grid, center):
             slot = self.lot.slots[sid]
             if abs(angle_diff(v.state.pose.theta, slot.heading)) > OCCUPANCY_ALIGN:
@@ -259,7 +278,7 @@ class SensorSuite:
         점유를 유지할지 판단하는 넉넉한 상자다. 빠져나가는 중이라 비뚤어져 있어도
         아직 그 자리를 쓰고 있는 것은 사실이다.
         """
-        center = body_center(v.state.pose, v.spec)
+        center = v.center
         for sid in cells_around(self._slot_grid, center):
             slot = self.lot.slots[sid]
             if inside_rect(

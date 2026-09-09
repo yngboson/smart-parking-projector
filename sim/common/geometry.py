@@ -161,6 +161,37 @@ def turn_angle_total(points: Sequence[Vec2]) -> float:
     return total
 
 
+def offset_polyline(points: Sequence[Vec2], offset: float) -> list[Vec2]:
+    """폴리라인을 진행 방향 기준 오른쪽으로 민다. 음수면 왼쪽.
+
+    꼭짓점에서는 앞뒤 구간의 이등분선 방향으로 민다. 각 구간을 따로 밀면
+    코너에서 선이 끊어진다.
+
+    **세 계층이 같은 함수를 쓴다.** 관제는 이걸로 바닥에 그릴 유도선을 만들고,
+    운전자는 안내가 없을 때 스스로 주행 차선을 잡는다. 둘이 다른 계산을 쓰면
+    바닥의 선과 차가 가는 길이 어긋난다 — 실제로 어긋났다.
+    """
+    pts = list(points)
+    if len(pts) < 2 or offset == 0.0:
+        return pts
+
+    out: list[Vec2] = []
+    last = len(pts) - 1
+    for i, p in enumerate(pts):
+        if i == 0:
+            d = (pts[1] - pts[0]).normalized()
+        elif i == last:
+            d = (pts[last] - pts[last - 1]).normalized()
+        else:
+            a = (pts[i] - pts[i - 1]).normalized()
+            b = (pts[i + 1] - pts[i]).normalized()
+            d = (a + b).normalized()
+            if d.length < 1e-6:      # 되돌아가는 꼭짓점 — 앞 구간 기준으로 민다
+                d = a
+        out.append(p + Vec2(d.y, -d.x) * offset)
+    return out
+
+
 def rect_corners(center: Vec2, heading: float, length: float, width: float) -> list[Vec2]:
     """직사각형(차량/주차면)의 네 꼭짓점. 충돌 판정과 렌더링에 공용."""
     fwd = Vec2.from_angle(heading)

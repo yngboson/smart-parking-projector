@@ -47,7 +47,12 @@ class Scenario:
         :param recovery: 시나리오의 복구 전략을 덮어쓴다. 전략 비교 실험이
             **같은 시나리오 위에서 전략만** 바꿔 돌리기 위한 통로다.
         """
+        from sim.control.api import NullControl
         from sim.control.system import ProjectorControl
+
+        if self.allocator == "none":
+            # 무안내 베이스라인 (D-010). 관제를 갈아끼우는 것만으로 모드가 바뀐다.
+            return NullControl()
 
         return ProjectorControl(
             lot,

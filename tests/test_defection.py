@@ -19,7 +19,7 @@ from random import Random
 
 import pytest
 
-from sim.agents.driver import Driver, DriverPhase, DriverProfile, _keep_right_offset
+from sim.agents.driver import Driver, DriverPhase, DriverProfile
 from sim.common.geometry import Pose, Vec2
 from sim.common.ids import SlotId
 from sim.common.lotmap import LotMap
@@ -62,7 +62,7 @@ def lane_y(lot: LotMap) -> float:
     조용히 엉뚱한 곳을 시험하게 된다 (CLAUDE.md '도면 좌표를 하드코딩하지 말 것').
     """
     h0 = next(a for a in lot.aisles if a.id == "H0")
-    return h0.start.y - _keep_right_offset(lot)
+    return h0.start.y - lot.travel_lane_offset
 
 
 def cruising(lot: LotMap, compliance: float, walk_preference: float = 1.0) -> Driver:

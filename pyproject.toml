@@ -17,10 +17,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "matplotlib>=3.8", "httpx>=0.27"]   # httpx: FastAPI TestClient
+dev = ["pytest>=8.0", "pytest-xdist>=3.5", "matplotlib>=3.8", "httpx>=0.27"]
 
 [tool.setuptools.packages.find]
 include = ["sim*", "server*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+# 시뮬레이션 테스트는 CPU 바운드다. 코어 수만큼 나눠 돌린다.
+# --dist loadfile: 한 파일의 테스트는 한 워커가 맡는다 — 무거운 module 스코프
+# 픽스처(붐비는 주차장 한 판 등)를 워커마다 다시 만들지 않기 위해서다.
+addopts = "-n auto --dist loadfile"

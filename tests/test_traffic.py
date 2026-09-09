@@ -192,11 +192,18 @@ def test_a_car_pulling_out_does_not_trigger_the_neighbours_sensor(lot: LotMap) -
     spec = VehicleSpec()
 
     class Fake:
+        """센서가 보는 최소한의 차량 (`world.sensors.VehicleView`)."""
+
         plate = "99가9999"
         vehicle_class = None
+
         def __init__(self, state):
+            from sim.common.vehicle import body_center
+
             self.spec = spec
             self.state = state
+            self.center = body_center(state.pose, spec)
+            self.version = 0
 
     # 주차면 입구에 걸친 채 통로 쪽으로 빠져나가는 중
     out = Vec2.from_angle(slot.heading) * 1.9

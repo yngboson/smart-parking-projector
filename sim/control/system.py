@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Sequence
 
-from sim.common.geometry import Vec2
+from sim.common.geometry import Vec2, offset_polyline
 from sim.common.ids import PlateId, SlotId
 from sim.common.lotmap import LotMap
 from sim.common.messages import (
@@ -293,9 +293,17 @@ class ProjectorControl:
 def guidance_polyline(lot: LotMap, route: Route, slot_id: SlotId) -> tuple[Vec2, ...]:
     """통로 경로에 주차면 진입 구간을 붙여 바닥에 그릴 선을 만든다.
 
-    선이 통로에서 뚝 끊기면 운전자는 어느 자리인지 알 수 없다. 주차면 안까지
-    들어가야 "저기가 내 자리"로 읽힌다. 실제로 어떻게 꺾어 들어갈지는 운전자가
-    정하는 일이므로(agents 계층), 관제는 자리를 가리키기만 한다.
+    **선은 실제로 달릴 차선 위에 그린다.** 경로 탐색은 통로 중심선의 노드를 잇지만,
+    차는 우측통행으로 그 옆을 달린다 (D-012). 중심선에 그리면 바닥의 선과 차가
+    가는 길이 통로 폭의 4분의 1만큼 어긋나고, 넓은 통로에서는 그 차이가 3m 를
+    넘는다 — 안내를 따르는 차가 선 밖으로 달리는 것처럼 보인다.
+
+    이 시스템의 약속은 "선을 따라가면 자리에 닿는다"이다. 그 선이 실제 차선이
+    아니면 약속이 깨진다.
+
+    선이 통로에서 뚝 끊기면 어느 자리인지 알 수 없으므로 주차면 안까지 이어 붙인다.
+    실제로 어떻게 꺾어 들어갈지는 운전자가 정하는 일이다 (agents 계층).
     """
     slot = lot.slots[slot_id]
-    return tuple(route.polyline) + (slot.entry_point, slot.center)
+    lane = offset_polyline(route.polyline, lot.travel_lane_offset)
+    return tuple(lane) + (slot.entry_point, slot.center)

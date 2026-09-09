@@ -101,16 +101,27 @@ class AisleTraffic:
 
         self._waiting: dict[PlateId, _Waiting] = {}
         self._stop: dict[PlateId, float] = {}
+        self._cache: dict[PlateId, tuple[int, SlotId | None]] = {}
+        """번호판 → (자세 버전, 주차면). 세워둔 차는 다시 조회하지 않는다."""
 
     # ── 매 틱 ─────────────────────────────────────────────────────
 
     def update(self, t: float, vehicles: Sequence[VehicleView]) -> None:
         self._stop = {}
         self.in_slot = {}
+        live = set()
         for v in vehicles:
-            sid = self._slot_of(v)
+            live.add(v.plate)
+            hit = self._cache.get(v.plate)
+            if hit is not None and hit[0] == v.version:
+                sid = hit[1]
+            else:
+                sid = self._slot_of(v)
+                self._cache[v.plate] = (v.version, sid)
             if sid is not None:
                 self.in_slot[v.plate] = sid
+        for gone in [p for p in self._cache if p not in live]:
+            del self._cache[gone]
 
         on_aisle = [v for v in vehicles if v.plate not in self.in_slot]
         for v in vehicles:
@@ -178,7 +189,7 @@ class AisleTraffic:
         return v.state.pose.forward.dot(to_aisle) >= FACING_AISLE
 
     def _slot_of(self, v: VehicleView) -> SlotId | None:
-        center = body_center(v.state.pose, v.spec)
+        center = v.center
         for sid in cells_around(self._slot_grid, center):
             slot = self.lot.slots[sid]
             if abs(angle_diff(v.state.pose.theta, slot.heading)) > ALIGNED_WITH_SLOT:

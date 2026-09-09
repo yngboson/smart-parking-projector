@@ -109,7 +109,10 @@ STRAIGHT_STEER = 0.02
 
 
 def forward_clearance(
-    behind: SelfState, spec: VehicleSpec, obstacles: Iterable[Sequence[Vec2]]
+    behind: SelfState,
+    spec: VehicleSpec,
+    obstacles: Iterable[Sequence[Vec2]],
+    centres: Sequence[Vec2] | None = None,
 ) -> float:
     """내 앞범퍼에서 앞차까지 남은 거리. 막힌 것이 없으면 무한대.
 
@@ -140,8 +143,17 @@ def forward_clearance(
         else spec.wheelbase / math.tan(behind.steer)
     )
 
+    # 멀리 있는 차는 꼭짓점 네 개를 변환하기 전에 거리 하나로 걸러낸다.
+    # 주차장이 커지면 대부분의 차가 서로 무관한데, 그걸 매번 전부 계산하면
+    # 차량 수의 제곱으로 비용이 늘어난다.
+    cutoff = (MAX_LOOK + spec.length) ** 2
+
     nearest = MAX_LOOK
-    for corners in obstacles:
+    for i, corners in enumerate(obstacles):
+        if centres is not None:
+            c0 = centres[i]
+            if (c0.x - ox) ** 2 + (c0.y - oy) ** 2 > cutoff:
+                continue
         for c in corners:
             dx, dy = c.x - ox, c.y - oy
             u = dx * ct + dy * st            # 진행 방향

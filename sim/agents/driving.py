@@ -29,8 +29,22 @@ from sim.common.vehicle import ControlInput, SelfState, VehicleSpec
 class DrivingSkill:
     """운전 숙련도. 사람마다 다르고, 같은 유도선을 줘도 결과가 달라진다."""
 
-    lookahead_gain: float = 1.05
-    """속도 1 m/s 당 앞을 내다보는 거리(m). 작을수록 선에 딱 붙지만 흔들린다."""
+    lookahead_gain: float = 0.60
+    """속도 1 m/s 당 앞을 내다보는 거리(m). 작을수록 선에 딱 붙지만 흔들린다.
+
+    **너무 크면 코너를 크게 돈다.** 멀리 있는 목표점을 향해 일찍부터 꺾기 시작해
+    실제 회전반경이 물리 한계의 두세 배가 된다 — 화면에서 차가 통로를 크게 휘돌아
+    나가는 것처럼 보인다.
+
+    순항 8.4 m/s 에서 값을 훑어본 결과 (직각 코너 실측):
+
+        gain 1.05 → 코너 반경 10.4m · 직선 흔들림 0.006m
+        gain 0.60 → 코너 반경  6.9m · 직선 흔들림 0.000m   ← 채택
+        gain 0.40 → 코너 반경 10.7m · 밀림 1.59m           (모자라서 되돌리느라 더 나쁨)
+
+    더 줄이면 오히려 나빠진다. 목표점이 너무 가까워 늦게 꺾고, 놓친 만큼 되돌리는
+    동작이 커지기 때문이다.
+    """
 
     min_lookahead: float = 2.6
     max_lookahead: float = 7.0
@@ -78,8 +92,11 @@ CRUISE_PER_AISLE_METRE = 0.60
 그대로 두면 화면이 이상하게 느려 보이고, 주차장이 커진 만큼 주차 소요 시간만 늘어난다.
 """
 
-LOOKAHEAD_PER_SPEED = 1.5
-"""순항 속도 1 m/s 당 최대 예견 거리(m). 빨리 달릴수록 멀리 봐야 선을 놓치지 않는다."""
+LOOKAHEAD_PER_SPEED = 0.85
+"""순항 속도 1 m/s 당 최대 예견 거리(m). 빨리 달릴수록 조금 더 멀리 본다.
+
+크게 잡으면 코너가 뭉개진다 (`DrivingSkill.lookahead_gain` 참조).
+"""
 
 REVERSE_SPEED_RATIO = 0.21
 """순항 속도 대비 후진 속도. 폭 6m 통로 기준 0.85 m/s 를 재현한다."""

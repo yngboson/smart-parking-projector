@@ -59,9 +59,17 @@ def test_an_arriving_car_gets_a_guidance_line(control: ProjectorControl, lot: Lo
     cmd = enter(control, A)
     assert cmd.reason is GuidanceReason.INITIAL
     assert cmd.target_slot in lot.slots
-    assert cmd.polyline[0] == lot.node_pos(lot.entry_nodes[0])
     assert cmd.polyline[-1] == lot.slots[cmd.target_slot].center, (
         "유도선이 주차면 안까지 들어가야 어느 자리인지 읽힌다"
+    )
+
+    # 선은 통로 중심선이 아니라 **실제로 달릴 차선** 위에 그려진다.
+    # 중심선에 그리면 우측통행으로 달리는 차가 선 밖으로 가는 것처럼 보인다.
+    entry = lot.node_pos(lot.entry_nodes[0])
+    sideways = cmd.polyline[0].distance_to(entry)
+    assert sideways == pytest.approx(lot.travel_lane_offset, abs=0.05), (
+        f"유도선이 차선 위에 있지 않습니다 (중심선에서 {sideways:.2f}m, "
+        f"차선은 {lot.travel_lane_offset:.2f}m)"
     )
 
 

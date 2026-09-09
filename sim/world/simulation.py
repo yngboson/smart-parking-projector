@@ -40,7 +40,7 @@ from sim.common.messages import (
 )
 from sim.common.vehicle import SelfState, VehicleSpec, body_center, footprint
 from sim.common.geometry import Pose
-from sim.control.api import ControlSystem
+from sim.control.api import ControlSystem, NullControl
 from sim.control.system import ProjectorControl
 from sim.world import physics
 from sim.world.projector import Projector
@@ -154,11 +154,33 @@ class WorldVehicle:
     parked_t: float | None = None
     parked_slot: SlotId | None = None
 
+    center: Vec2 = field(default_factory=lambda: Vec2(0.0, 0.0))
+    """차체 중심. `refresh()` 가 한 틱에 한 번만 계산한다."""
+
+    shape: list = field(default_factory=list)
+    """차체 네 꼭짓점. 마찬가지로 한 틱에 한 번."""
+
+    version: int = 0
+    """자세가 바뀔 때마다 올라간다. 센서·교통이 '이 차는 그대로다'를 알아보는 표식.
+
+    세워둔 차는 이 값이 그대로이므로, 주차면 조회 같은 결과를 다시 계산할 이유가 없다.
+    """
+
+    def refresh(self) -> None:
+        """차체 기하를 다시 잰다. 물리를 적분한 직후 한 번만 부른다.
+
+        **한 틱에 한 번이면 충분하다.** 예전에는 센서·교통·차간거리가 저마다
+        다시 계산해서 차량 하나당 다섯 번씩 삼각함수를 돌렸다 — 프로파일에서
+        `body_center` 호출이 27만 번이었고, 그게 가장 무거운 항목이었다.
+        """
+        self.center = body_center(self.state.pose, self.spec)
+        self.shape = footprint(self.state.pose, self.spec)
+        self.version += 1
+
     @property
     def body_pose(self) -> Pose:
         """차체 중심 기준 자세. 뷰어가 메시를 놓는 기준이다."""
-        c = body_center(self.state.pose, self.spec)
-        return Pose(c.x, c.y, self.state.pose.theta)
+        return Pose(self.center.x, self.center.y, self.state.pose.theta)
 
 
 @dataclass(slots=True)
@@ -202,6 +224,13 @@ class Simulation:
         self.traffic = AisleTraffic(lot)
         self.vision = VisionModel.for_lot(lot)
         self._skill = DrivingSkill.for_lot(lot)
+
+        self.unguided = isinstance(self.control, NullControl)
+        """유도선이 없는가 — 무안내 베이스라인 (D-010).
+
+        관제를 갈아끼우는 것만으로 모드가 바뀐다. 운전자는 안내가 오지 않으면
+        스스로 통로를 돌며 찾고, 나머지 배선은 그대로다.
+        """
 
         self.t = 0.0
         self.vehicles: list[WorldVehicle] = []
@@ -253,12 +282,23 @@ class Simulation:
         self.projector.apply(commands, self.t)
 
         # ④ 운전자들이 각자 보고 판단하고, 물리가 그 결과를 적분한다
-        shapes = {v.plate: footprint(v.state.pose, v.spec) for v in self.vehicles}
         self.traffic.update(self.t, self.vehicles)
+
+        # 세워둔 차는 어떤 입력을 받아도 답이 같다. 만차에서는 차량의 8할이
+        # 여기 해당하므로 건너뛰는 것만으로 크게 빨라진다.
+        movers = [v for v in self.vehicles if not v.driver.is_idle]
+        shapes = [v.shape for v in self.vehicles]
+        centres = [v.center for v in self.vehicles]
+        plates = [v.plate for v in self.vehicles]
+
         for v in self.vehicles:
-            perception = self._perceive(v, shapes)
+            if v.driver.is_idle:
+                self._update_schedule(v)
+                continue
+            perception = self._perceive(v, (plates, shapes, centres))
             cmd = v.driver.decide(self.t, v.state, perception)
             v.state = physics.step(v.state, v.spec, cmd, dt)
+            v.refresh()
             self.projector.advance(v.plate, v.state.pose.position)
             self._update_schedule(v)
 
@@ -269,7 +309,7 @@ class Simulation:
 
     # ── 지각 ──────────────────────────────────────────────────────
 
-    def _perceive(self, v: WorldVehicle, shapes: dict) -> Perception:
+    def _perceive(self, v: WorldVehicle, shapes) -> Perception:
         return Perception(
             t=self.t,
             pose_forward_clearance=self._clearance(v, shapes),
@@ -278,7 +318,7 @@ class Simulation:
             guidance=self.projector.view(v.plate),
         )
 
-    def _clearance(self, v: WorldVehicle, shapes: dict) -> float:
+    def _clearance(self, v: WorldVehicle, shapes) -> float:
         """앞차까지의 여유 거리. 막혀 있지 않으면 무한대.
 
         **주차면 안에 들어가 있는 차는 세지 않는다.** 통로가 도로이고 주차면은
@@ -289,10 +329,15 @@ class Simulation:
         월드는 재서 알려줄 뿐이다. 이 값을 보고 속도를 줄이는 것은 운전자다.
         """
         parked = self.traffic.in_slot
-        others = [
-            c for w, c in shapes.items() if w != v.plate and w not in parked
-        ]
-        return physics.forward_clearance(v.state, v.spec, others)
+        plates, corners, centres = shapes
+        keep_shapes = []
+        keep_centres = []
+        for i, w in enumerate(plates):
+            if w == v.plate or w in parked:
+                continue
+            keep_shapes.append(corners[i])
+            keep_centres.append(centres[i])
+        return physics.forward_clearance(v.state, v.spec, keep_shapes, keep_centres)
 
     def _visible_slots(self, v: WorldVehicle) -> tuple[VisibleSlot, ...]:
         """운전자가 육안으로 확인한 주차면들.
@@ -343,7 +388,9 @@ class Simulation:
             return
 
         self._backlog -= 1
-        self.vehicles.append(self._make_vehicle())
+        fresh = self._make_vehicle()
+        fresh.refresh()
+        self.vehicles.append(fresh)
 
     def _prefill(self) -> None:
         """시작부터 일부 주차면을 채워 둔다."""
@@ -367,6 +414,7 @@ class Simulation:
             v = self._make_vehicle()
             pose = v.driver.park_in(slot, approach or 0.0)
             v.state = SelfState(pose=pose, speed=0.0, steer=0.0, gear=0)
+            v.refresh()
             v.parked_t = 0.0
             v.parked_slot = slot.id
             v.dwell = self.rng.uniform(0.3, 1.0) * self.config.dwell_mean
@@ -399,7 +447,7 @@ class Simulation:
         skill = replace(
             base,
             cruise_speed=base.cruise_speed * self.rng.uniform(0.85, 1.15),
-            lookahead_gain=self.rng.uniform(0.95, 1.20),
+            lookahead_gain=base.lookahead_gain * self.rng.uniform(0.92, 1.15),
         )
         profile = DriverProfile(
             compliance=self._sample_compliance(),
@@ -411,6 +459,7 @@ class Simulation:
         # 결과까지 흔들면 같은 시드로도 재현이 안 된다.
         driver = Driver(
             spec=spec, lot=self.lot, profile=profile,
+            self_directed=self.unguided,
             rng=random.Random(self.rng.getrandbits(32)),
         )
 
@@ -612,6 +661,7 @@ class Simulation:
 
 _VIEW_STATE = {
     DriverPhase.ARRIVING: "waiting",
+    DriverPhase.SEEKING: "searching",
     DriverPhase.CRUISING: "driving",
     DriverPhase.STAGING: "parking",
     DriverPhase.REVERSING: "parking",

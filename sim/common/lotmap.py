@@ -20,7 +20,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
 
-from sim.common.geometry import Vec2, rect_corners
+from sim.common.geometry import Vec2, offset_polyline, rect_corners
+
+TRAVEL_LANE_RATIO = 0.225
+"""통로 폭 대비 주행 차선의 중심선 이격 비율. 폭 6m 에서 1.35m."""
 from sim.common.ids import EdgeId, NodeId, SlotId, SlotType
 
 
@@ -140,6 +143,21 @@ class LotMap:
 
     def node_pos(self, node: NodeId) -> Vec2:
         return self.nodes[node].pos
+
+    @property
+    def travel_lane_offset(self) -> float:
+        """통로 중심선에서 주행 차선까지의 거리(m). 진행 방향 오른쪽.
+
+        **도로의 성질이므로 도면이 답한다.** 관제는 이 값으로 바닥에 유도선을 그리고,
+        운전자는 안내가 없을 때 이 값으로 자기 차선을 잡는다. 둘이 다르면 바닥의
+        선과 차가 가는 길이 어긋난다.
+
+        폭에 비례시키는 이유: 넓은 통로에서 중앙선만 따라 달리면 마주 오는 차와
+        정면으로 만난다 (docs/DECISIONS.md D-012). 폭 6m 에서 1.35m —
+        교착을 없앤 값이 그것이었다.
+        """
+        widths = [a.width for a in self.aisles]
+        return (min(widths) if widths else 6.0) * TRAVEL_LANE_RATIO
 
     def shortest_path(self, src: NodeId, dst: NodeId) -> list[NodeId] | None:
         """거리만 보는 최단 경로. 길이 없으면 None.

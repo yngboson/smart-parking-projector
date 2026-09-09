@@ -1,0 +1,25 @@
+name: baseline
+description: >
+  **무안내 베이스라인 (D-010).** 유도선이 없다. 운전자는 통로를 돌며 육안으로
+  빈자리를 찾는다. 발표의 첫 슬라이드가 여기서 나온다 — "왜 이 시스템이 필요한가"는
+  없을 때가 어떤지를 **같은 조건에서** 보여줘야 답이 된다.
+
+  `busy` 와 도착률·체류시간·초기점유가 같다. 다른 것은 `allocator: none` 하나뿐이며,
+  같은 시드로 나란히 돌려 평균/p95 주차 소요시간과 총 주행거리를 비교한다.
+
+  비협조 비율은 0 이다 — 따를 안내가 없으므로 협조/비협조 구분 자체가 성립하지 않는다.
+
+simulation:
+  arrival_rate: 0.20
+  dwell_mean: 400.0
+  prefill: 0.5
+  noncompliant_share: 0.0
+  max_guided: 20
+
+control:
+  allocator: none           # ← 유도선 없음
+  recovery: global_rematch  # 쓰이지 않는다 (복구할 배정 자체가 없다)
+
+run:
+  duration: 900.0
+  seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
