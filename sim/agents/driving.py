@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Sequence
 
 from sim.common.geometry import Vec2, angle_diff, cumulative_lengths
+from sim.common.lotmap import LotMap
 from sim.common.vehicle import ControlInput, SelfState, VehicleSpec
 
 
@@ -37,14 +38,51 @@ class DrivingSkill:
     """후진할 때는 훨씬 짧게 본다. 실제로도 후진은 천천히 조금씩 본다."""
 
     cruise_speed: float = 3.6
-    """통로 순항 속도(m/s). 약 13 km/h."""
+    """통로 순항 속도(m/s). 약 13 km/h — **좁은 통로(6m) 기준의 기본값이다.**
+
+    실제 시뮬레이션에서는 `for_lot()` 이 도면의 통로 폭에서 계산한 값을 쓴다.
+    """
 
     reverse_speed: float = 0.85
-    lateral_accel_limit: float = 1.5
+    lateral_accel_limit: float = 2.6
     """코너에서 견디는 횡가속도(m/s²). 작을수록 코너를 얌전히 돈다."""
 
     stop_margin: float = 0.12
     """경로 끝에서 이만큼 남기고 멈춘다."""
+
+    @staticmethod
+    def for_lot(lot: LotMap) -> "DrivingSkill":
+        """이 주차장의 통로 폭에 맞춘 운전 습관.
+
+        넓은 통로에서는 빨리 달리고 멀리 본다. 도면을 바꿀 때 속도·예견거리를
+        따로 손보지 않아도 되도록 여기 한 곳에서 계산한다.
+        """
+        widths = [a.width for a in lot.aisles]
+        aisle = min(widths) if widths else 6.0
+        cruise = aisle * CRUISE_PER_AISLE_METRE
+        return DrivingSkill(
+            cruise_speed=cruise,
+            reverse_speed=max(0.85, cruise * REVERSE_SPEED_RATIO),
+            max_lookahead=max(7.0, cruise * LOOKAHEAD_PER_SPEED),
+        )
+
+
+CRUISE_PER_AISLE_METRE = 0.60
+"""통로 폭 1m 당 순항 속도(m/s).
+
+**도면 치수를 바꿀 때 건드릴 값이 하나이도록** 속도를 통로 폭에서 계산한다.
+폭 6m 통로에서 3.6 m/s(13 km/h) — 좁은 통로에서 검증된 값이고, 폭 14m 짜리
+왕복 2차선급 통로에서는 8.4 m/s(30 km/h)가 된다.
+
+넓은 길에서 사람이 더 빨리 달리는 것은 관찰된 사실이다. 통로만 넓히고 속도를
+그대로 두면 화면이 이상하게 느려 보이고, 주차장이 커진 만큼 주차 소요 시간만 늘어난다.
+"""
+
+LOOKAHEAD_PER_SPEED = 1.5
+"""순항 속도 1 m/s 당 최대 예견 거리(m). 빨리 달릴수록 멀리 봐야 선을 놓치지 않는다."""
+
+REVERSE_SPEED_RATIO = 0.21
+"""순항 속도 대비 후진 속도. 폭 6m 통로 기준 0.85 m/s 를 재현한다."""
 
 
 @dataclass

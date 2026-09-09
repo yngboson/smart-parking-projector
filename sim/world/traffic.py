@@ -38,7 +38,7 @@ import math
 from dataclasses import dataclass
 from typing import Sequence
 
-from sim.common.geometry import Vec2
+from sim.common.geometry import Vec2, angle_diff
 from sim.common.ids import PlateId, SlotId
 from sim.common.lotmap import LotMap, Slot
 from sim.common.vehicle import body_center
@@ -58,6 +58,16 @@ MOVING_SPEED = 0.40
 
 SLOT_MARGIN = 0.40
 """주차면 안에 있다고 볼 때의 여유(m)."""
+
+ALIGNED_WITH_SLOT = 1.05
+"""주차면과 이 각도(rad, 약 60°) 안으로 정렬돼야 '그 자리를 쓰는 중'으로 본다.
+
+주차면이 커지면 그 사각형이 통로 가까이까지 뻗는다. 자세를 보지 않으면 **통로를
+가로질러 지나가는 차**까지 '주차면 안'으로 잡히고, 그러면 그 차가 다른 차의
+장애물 계산에서 빠져 버린다 — 뒤차가 그대로 밀고 들어간다.
+
+들어가거나 나오는 차는 주차면과 나란하고, 지나가는 차는 직각이다.
+"""
 
 FACING_AISLE = 0.50
 """통로 쪽을 향하고 있다고 볼 최소 내적값 (약 60°)."""
@@ -171,6 +181,8 @@ class AisleTraffic:
         center = body_center(v.state.pose, v.spec)
         for sid in cells_around(self._slot_grid, center):
             slot = self.lot.slots[sid]
+            if abs(angle_diff(v.state.pose.theta, slot.heading)) > ALIGNED_WITH_SLOT:
+                continue
             if inside_rect(
                 center, slot.center, slot.heading,
                 slot.length + SLOT_MARGIN, slot.width + SLOT_MARGIN,

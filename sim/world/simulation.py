@@ -23,7 +23,7 @@ from __future__ import annotations
 import argparse
 import math
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Iterator, Sequence
 
 from sim.agents.driver import Driver, DriverPhase, DriverProfile
@@ -200,7 +200,8 @@ class Simulation:
         self.sensors = SensorSuite(lot, self.config.slot_sensor_mode)
         self.projector = Projector()
         self.traffic = AisleTraffic(lot)
-        self.vision = VisionModel()
+        self.vision = VisionModel.for_lot(lot)
+        self._skill = DrivingSkill.for_lot(lot)
 
         self.t = 0.0
         self.vehicles: list[WorldVehicle] = []
@@ -392,9 +393,12 @@ class Simulation:
         spec = VehicleSpec.of(vclass)
         plate = self._new_plate()
 
-        # 사람마다 운전 실력도, 안내를 따르는 정도도 다르다.
-        skill = DrivingSkill(
-            cruise_speed=self.rng.uniform(3.0, 4.0),
+        # 기본 운전 습관은 도면(통로 폭)이 정하고, 사람마다 편차만 얹는다.
+        # 도면 치수를 바꿔도 여기를 손볼 필요가 없다.
+        base = self._skill
+        skill = replace(
+            base,
+            cruise_speed=base.cruise_speed * self.rng.uniform(0.85, 1.15),
             lookahead_gain=self.rng.uniform(0.95, 1.20),
         )
         profile = DriverProfile(

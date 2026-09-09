@@ -35,10 +35,15 @@ class VehicleSpec:
     max_steer_rate: float = 1.10
     """조향 각속도 한계(rad/s). 운전자가 핸들을 돌리는 속도."""
 
-    max_speed: float = 4.20
-    """통로 주행 최고 속도(m/s). 약 15 km/h."""
+    max_speed: float = 12.00
+    """차가 낼 수 있는 최고 속도(m/s). 약 43 km/h — **상한일 뿐 목표가 아니다.**
 
-    max_reverse_speed: float = 1.20
+    실제로 얼마나 빨리 달릴지는 운전자가 정하고(`DrivingSkill.cruise_speed`),
+    그 값은 통로 폭에서 계산된다(`DrivingSkill.for_lot`). 여기 값은 좁은 통로에서든
+    넓은 통로에서든 순항 속도를 가로막지 않을 만큼만 높으면 된다.
+    """
+
+    max_reverse_speed: float = 2.50
     max_accel: float = 1.60
     max_decel: float = 3.20
 

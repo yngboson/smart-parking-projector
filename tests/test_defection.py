@@ -44,9 +44,11 @@ def lot() -> LotMap:
 @pytest.fixture(scope="module")
 def crowded(lot: LotMap):
     """붐비는 주차장 한 판. 무거운 실행이라 파일 전체가 나눠 쓴다."""
+    # 주차장이 커질수록 사건이 늦게 일어난다 — 차가 더 멀리, 더 오래 달리기 때문이다.
+    # 창을 짧게 잡으면 "강탈이 안 일어난다"가 아니라 "아직 안 일어났다"를 보게 된다.
     sim = Simulation(lot, config=CROWDED)
     thefts, rows, peak = [], [], 0.0
-    for frame in sim.run(300.0):
+    for frame in sim.run(550.0):
         thefts += [i for i in sim.control.inferences if isinstance(i, SlotStolen)]
         rows += [e for e in frame.events if e["type"] == "slot_stolen"]
         peak = max(peak, frame.kpi["occupancy"])

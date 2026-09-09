@@ -38,11 +38,23 @@ TURN_RADIUS_MARGIN = 1.15
 사람도 여유를 두고 돈다.
 """
 
-STAGING_LEAD_IN = 3.0
-"""정차 지점 앞에 두는 직선 유도 구간(m).
+MIN_STAGING_LEAD_IN = 3.0
+"""정차 지점 앞에 두는 직선 유도 구간의 최소 길이(m).
 
 이게 없으면 차가 정차 지점에 **위치는** 맞게 서지만 **방향이** 비뚤어진다.
 후진 주차는 시작 자세가 전부라 방향이 틀어지면 주차면을 벗어난다.
+"""
+
+STAGING_APPROACH_RATIO = 3.0
+"""차선에서 정차 지점까지 옆으로 벌어진 거리 × 이 값 = 접근 구간 길이.
+
+**통로가 넓어지면 이 구간도 길어져야 한다.** 주행 차선은 통로 중앙 근처에 있고
+후진 주차 정차 지점은 주차면 쪽 끝에 있는데, 통로가 넓을수록 그 둘이 멀어진다.
+14m 통로에서는 9.5m 나 벌어진다 — 그걸 3m 안에 붙으려면 차가 통로를 가로지르는
+급격한 사선을 그리게 되고, 반대편 차선까지 막아 통로가 굳는다.
+
+비율 3 이면 사선 기울기가 약 18° 로 완만해진다. 좁은 통로(7m)에서는 벌어진 거리가
+1.2m 뿐이라 결과가 최소값과 거의 같다 — 기존 동작을 바꾸지 않는다.
 """
 
 KEEP_RIGHT_RATIO = 0.225
@@ -63,6 +75,27 @@ KEEP_RIGHT_RATIO = 0.225
 FALLBACK_AISLE_WIDTH = 6.0
 """도면에 통로 정보가 없을 때 가정하는 폭(m)."""
 
+EXIT_RUN_OUT = 30.0
+"""출구 노드를 지나 이만큼 더 이어 두는 가상의 경로(m).
+
+**경로가 출구에서 끝나면 운전자는 거기서 정지한다.** 경로 추종기는 끝점에서 멈추도록
+감속하므로, 출구 6m 전부터 속도를 줄이고 차단기 앞에서 완전히 선다. 한 대씩 서면
+그 뒤로 통로 전체가 밀린다 — 실제로 그렇게 병목이 생겼다.
+
+실제 운전자는 출구를 그냥 통과해 나간다. 그래서 경로를 주차장 바깥까지 연장해
+두고, 출구를 지나는 순간 퇴장 처리한다. 감속할 '끝'이 없으니 서지 않는다.
+"""
+
+EXIT_MARGIN = 0.5
+"""출구 정지선을 이만큼 지나면 떠난 것으로 본다(m).
+
+**거리로 판정하면 안 된다.** 차는 우측통행으로 통로 중앙에서 비껴 달리므로 출구
+노드 바로 옆을 스쳐 지나갈 뿐, 그 지점에 가까이 가지 않는다. 반경으로 재면
+판정이 영영 안 되고 차가 주차장 밖까지 계속 달린다 — 실제로 그랬다.
+
+지나갔는지는 **진행 방향으로 투영**해서 본다. 옆으로 얼마나 비껴 있든 상관없다.
+"""
+
 MIN_TEMPTATION_GAIN = 12.0
 """이만큼은 덜 달려야 이탈을 고민한다(m).
 
@@ -72,9 +105,18 @@ MIN_TEMPTATION_GAIN = 12.0
 """
 
 MIN_TEMPTATION_AHEAD = 9.0
-"""이 거리보다 가까운 자리는 노리지 않는다(m).
+"""이 거리보다 가까운 자리는 노리지 않는다(m) — 최소값.
 
 후진 주차는 주차면을 지나쳐 정차한 뒤 들어가는 것이라, 코앞의 자리는 이미 늦었다.
+**빨리 달릴수록 더 멀리서 판단해야 한다.** 실제 값은 순항 속도에서 계산한다
+(`TEMPTATION_LEAD_SECONDS`).
+"""
+
+TEMPTATION_LEAD_SECONDS = 2.5
+"""이만큼 앞을 내다보고 이탈을 결정한다(초).
+
+거리로 고정하면 통로가 넓어져 속도가 빨라졌을 때 판단이 늦는다 — 자리를 발견한
+순간 이미 지나쳐 있다.
 """
 
 WALK_WEIGHT_RANGE = (1.0, 5.0)
@@ -175,6 +217,9 @@ class Driver:
     _revision: int = field(default=-1, init=False)
     _stalled_since: float | None = field(default=None, init=False)
     _keep_right: float = field(default=0.0, init=False)
+    _min_ahead: float = field(default=MIN_TEMPTATION_AHEAD, init=False)
+    _exit_gate: tuple[Vec2, Vec2] | None = field(default=None, init=False)
+    """출구 정지선 (위치, 나가는 방향)."""
     _lane: list[Vec2] = field(default_factory=list, init=False)
     """지금 달리는 통로 구간. 이탈할 때 새 정차 지점만 갈아 끼우면 된다."""
 
@@ -187,6 +232,10 @@ class Driver:
     def __post_init__(self) -> None:
         self._follower = PathFollower(self.spec, self.profile.skill)
         self._keep_right = _keep_right_offset(self.lot)
+        self._min_ahead = max(
+            MIN_TEMPTATION_AHEAD,
+            self.profile.skill.cruise_speed * TEMPTATION_LEAD_SECONDS,
+        )
 
     # ── 외부에서 걸어오는 신호 ─────────────────────────────────────
 
@@ -266,7 +315,7 @@ class Driver:
             return self._halt()
 
         if self.phase is DriverPhase.LEAVING:
-            if self._follower.is_finished(state):
+            if self._has_left(state) or self._follower.is_finished(state):
                 self.phase = DriverPhase.GONE
                 return self._halt()
             return self._drive(state, limit)
@@ -357,7 +406,7 @@ class Driver:
 
             d = vs.center - state.pose.position
             ahead = d.x * ct + d.y * st
-            if ahead < MIN_TEMPTATION_AHEAD:
+            if ahead < self._min_ahead:
                 continue        # 후진 주차를 하기엔 이미 늦었다
             if not self._is_on_this_aisle(vs.slot_id, state):
                 continue
@@ -403,7 +452,7 @@ class Driver:
             turn_radius=self.spec.min_turn_radius * TURN_RADIUS_MARGIN,
         )
         staging = maneuver.staging
-        lead_in = staging.position - Vec2.from_angle(staging.theta) * STAGING_LEAD_IN
+        lead_in = _lead_in_point(self._lane, staging)
         path = _trim_before(self._lane, lead_in) + [lead_in, staging.position]
         if len(path) < 2:
             return False
@@ -480,7 +529,7 @@ class Driver:
         )
 
         staging = self._maneuver.staging
-        lead_in = staging.position - Vec2.from_angle(staging.theta) * STAGING_LEAD_IN
+        lead_in = _lead_in_point(lane, staging)
         drive_path = _trim_before(lane, lead_in) + [lead_in, staging.position]
 
         self._follower.set_path(drive_path, gear=1)
@@ -510,13 +559,27 @@ class Driver:
         if route is None:
             return None
 
-        lane = _keep_right([self.lot.node_pos(n) for n in route], self._keep_right)
+        nodes = [self.lot.node_pos(n) for n in route]
+        lane = _run_past_exit(_keep_right(nodes, self._keep_right))
+
+        # 정지선은 **비껴 달리기 전의** 노드 위치로 잡는다. 우측통행 오프셋이
+        # 들어간 경로 위 점으로 잡으면 판정 기준이 차선마다 달라진다.
+        if len(nodes) >= 2:
+            self._exit_gate = (nodes[-1], (nodes[-1] - nodes[-2]).normalized())
+
         if self._maneuver is None:
             return [state.pose.position] + lane
 
         staging = self._maneuver.staging
         ahead = _drop_behind(lane, staging.position, Vec2.from_angle(staging.theta))
         return list(reversed(self._maneuver.reverse_path)) + (ahead or lane)
+
+    def _has_left(self, state: SelfState) -> bool:
+        """출구를 통과했는가. 차단기 앞에서 서지 않고 그대로 나간다."""
+        if self._exit_gate is None:
+            return False
+        gate, out = self._exit_gate
+        return (state.pose.position - gate).dot(out) >= EXIT_MARGIN
 
     def _nearest_node(self, p: Vec2) -> NodeId:
         return min(self.lot.nodes, key=lambda n: self.lot.node_pos(n).distance_to(p))
@@ -627,6 +690,32 @@ def _approach_heading(lane: Sequence[Vec2], access_pos: Vec2) -> float:
         if d.length > 1e-6:
             return d.angle
     return 0.0
+
+
+def _lead_in_point(lane: Sequence[Vec2], staging: Pose) -> Vec2:
+    """정차 지점으로 들어가기 시작할 지점.
+
+    주행 차선에서 정차 지점까지 옆으로 얼마나 벌어져 있는지를 재서, 그만큼
+    완만하게 붙을 수 있는 길이를 잡는다. 통로 폭에 따라 자동으로 따라간다.
+    """
+    lead = MIN_STAGING_LEAD_IN
+    if len(lane) >= 2:
+        direction = (lane[-1] - lane[-2]).normalized()
+        if direction.length > 1e-6:
+            sideways = abs((staging.position - lane[-1]).cross(direction))
+            lead = max(lead, sideways * STAGING_APPROACH_RATIO)
+    return staging.position - Vec2.from_angle(staging.theta) * lead
+
+
+def _run_past_exit(lane: Sequence[Vec2]) -> list[Vec2]:
+    """출구 바깥으로 경로를 연장한다. 감속할 '끝'을 없애기 위해서다."""
+    pts = list(lane)
+    if len(pts) < 2:
+        return pts
+    tail = pts[-1] - pts[-2]
+    if tail.length < 1e-6:
+        return pts
+    return pts + [pts[-1] + tail.normalized() * EXIT_RUN_OUT]
 
 
 def _drop_behind(points: Sequence[Vec2], origin: Vec2, direction: Vec2) -> list[Vec2]:

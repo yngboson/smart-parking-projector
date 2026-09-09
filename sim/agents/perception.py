@@ -22,6 +22,7 @@ import math
 from dataclasses import dataclass
 
 from sim.common.geometry import Pose, Vec2, angle_diff
+from sim.common.lotmap import LotMap
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,11 +39,30 @@ class VisionModel:
     lateral_reach: float = 8.0
     """통로 중심선에서 옆으로 이만큼까지만 본다(m).
 
-    통로 폭 6m + 주차면 길이 5m 이므로, 접한 한 줄은 들어오고 건너편 두 번째 줄은
-    빠진다. 앞차와 주차된 차들에 가려 실제로도 보이지 않는다."""
+    지금 달리는 통로에 **접한 한 줄**은 들어오고, 그 너머는 빠진다. 건너편 두 번째
+    줄은 주차된 차들에 가려 실제로도 보이지 않는다.
+
+    **도면 치수를 바꾸면 이 값도 따라가야 한다.** 고정값으로 두면 통로가 넓어진
+    순간 바로 옆 주차면조차 시야 밖이 되어, 비협조 운전자가 이탈할 대상을 아예
+    못 보게 된다. `for_lot()` 을 쓰면 도면에서 계산된다."""
 
     behind_tolerance: float = 2.0
     """살짝 지나친 자리까지는 곁눈으로 본 것으로 친다(m)."""
+
+    @staticmethod
+    def for_lot(lot: "LotMap") -> "VisionModel":
+        """이 주차장의 치수에 맞춘 시야.
+
+        통로 중심선에서 접한 주차면 중심까지의 거리는 `통로 폭/2 + 주차면 길이/2`
+        다. 거기에 반 칸쯤 여유를 두면 접한 줄은 들어오고 건너편 줄은 빠진다.
+        """
+        aisles = [a.width for a in lot.aisles]
+        slots = [s.length for s in lot.slots.values()]
+        if not aisles or not slots:
+            return VisionModel()
+
+        reach = max(aisles) / 2.0 + max(slots) / 2.0 + max(slots) * 0.25
+        return VisionModel(lateral_reach=reach)
 
     def can_see(self, observer: Pose, target: Vec2) -> bool:
         """관측자의 자세에서 그 지점을 알아볼 수 있는가."""

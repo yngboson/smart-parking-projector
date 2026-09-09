@@ -3,7 +3,7 @@
  "config": {
   "dt": 0.1,
   "seed": 0,
-  "arrival_rate": 0.15,
+  "arrival_rate": 0.18,
   "dwell_mean": 150.0,
   "dwell_min": 30.0,
   "max_guided": 20,
@@ -19,12 +19,12 @@
  "frames": 800,
  "duration": 239.8,
  "kpi": {
-  "occupancy": 0.1333,
-  "avg_park_time": 38.07,
+  "occupancy": 0.1583,
+  "avg_park_time": 26.06,
   "reroutes": 0,
-  "active": 30,
+  "active": 26,
   "parked_total": 36,
   "stolen": 0,
-  "forced_merges": 38
+  "forced_merges": 0
  }
 }

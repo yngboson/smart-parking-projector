@@ -94,6 +94,17 @@ def test_no_car_is_assigned_a_slot_another_car_occupies(run) -> None:
 # ── 관제 ↔ 월드 정합 ──────────────────────────────────────────────
 
 
+def settled_before_the_end(sim, v) -> bool:
+    """센서가 점유를 확정할 시간이 있었는가.
+
+    주차면 센서는 같은 판정이 `OCCUPANCY_DEBOUNCE` 만큼 이어져야 발행한다.
+    실행이 끝나기 직전에 주차한 차는 관제가 **아직 모르는 것이 정상**이다.
+    """
+    from sim.world.sensors import OCCUPANCY_DEBOUNCE
+
+    return v.parked_t is not None and sim.t - v.parked_t > OCCUPANCY_DEBOUNCE + sim.config.dt
+
+
 def test_control_beliefs_match_what_actually_happened(run) -> None:
     """관제의 믿음이 현실과 어긋나면 재할당이 엉뚱한 자리를 준다.
 
@@ -101,7 +112,7 @@ def test_control_beliefs_match_what_actually_happened(run) -> None:
     """
     sim, _frames = run
     for v in sim.vehicles:
-        if v.parked_slot is None:
+        if v.parked_slot is None or not settled_before_the_end(sim, v):
             continue
         belief = sim.control.state.slots[v.parked_slot]
         assert belief.status is SlotStatus.OCCUPIED
@@ -114,7 +125,10 @@ def test_occupied_slot_count_matches_the_parked_cars(run) -> None:
         sid for sid, b in sim.control.state.slots.items()
         if b.status is SlotStatus.OCCUPIED
     }
-    parked = {v.parked_slot for v in sim.vehicles if v.parked_slot is not None}
+    parked = {
+        v.parked_slot for v in sim.vehicles
+        if v.parked_slot is not None and settled_before_the_end(sim, v)
+    }
     assert parked <= occupied
 
 
