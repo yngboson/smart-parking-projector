@@ -373,3 +373,73 @@ def test_the_line_is_drawn_on_the_lane_the_car_will_drive(lot: LotMap) -> None:
         assert nearest <= aisle / 2.0, (
             f"유도선이 통로 밖으로 나갔습니다 (중심선에서 {nearest:.1f}m)"
         )
+
+
+# ── 재방문 ────────────────────────────────────────────────────────
+
+
+def test_a_returning_car_sets_off_the_gate_camera_again(lot: LotMap) -> None:
+    """같은 번호판이 **나갔다 오면** 입구 카메라가 다시 울려야 한다.
+
+    번호판이 관측 목록에 처음 나타날 때만 입장으로 봤더니, 나간 바로 다음 틱에
+    돌아온 차는 목록에 빈틈이 없어 입장도 퇴장도 기록되지 않았다. 관제는 그 차를
+    영원히 '나가는 중'으로 믿고 자리를 주지 않았고, 그 차가 입구에 서서 나머지
+    전부를 막았다 (docs/DECISIONS.md D-026).
+    """
+    from sim.common.geometry import Pose
+    from sim.common.messages import VehicleEntered, VehicleExited
+    from sim.common.vehicle import SelfState, VehicleSpec
+    from sim.world.sensors import SensorSuite
+
+    class Car:
+        def __init__(self, entered_t: float):
+            self.plate = PlateId("11가1111")
+            self.vehicle_class = VehicleClass.SEDAN
+            self.spec = VehicleSpec()
+            self.entered_t = entered_t
+            self.state = SelfState(pose=Pose(5.0, -3.0, 0.0), speed=1.0, steer=0.0, gear=1)
+            self.center = self.state.pose.position
+            self.version = 0
+
+    sensors = SensorSuite(lot)
+    first = sensors.observe(0.0, [Car(entered_t=0.0)])
+    assert any(isinstance(e, VehicleEntered) for e in first)
+
+    # 같은 번호판, 새 방문 — 사이에 빈 틱이 **없다**
+    again = sensors.observe(1.0, [Car(entered_t=1.0)])
+    assert any(isinstance(e, VehicleExited) for e in again), "이전 방문의 퇴장이 없습니다"
+    assert any(isinstance(e, VehicleEntered) for e in again), "재방문이 기록되지 않았습니다"
+
+    order = [type(e).__name__ for e in again if isinstance(e, (VehicleEntered, VehicleExited))]
+    assert order.index("VehicleExited") < order.index("VehicleEntered"), (
+        "퇴장이 입장보다 먼저 와야 관제가 자리와 유도선을 정리하고 새로 시작한다"
+    )
+
+
+def test_nobody_waits_forever_at_the_entrance(lot: LotMap) -> None:
+    """**입구에 갇힌 차 한 대가 주차장 전체를 세운다.**
+
+    자리를 못 받은 차는 입구에 선다. 입구에 선 차는 뒷차의 진입을 막는다. 그러면
+    이벤트를 만들 차가 없어 관제의 시계도 멈춘다 (D-025) — 스스로를 가둔다.
+
+    재방문이 잦고 대기열이 긴 조건에서 특히 위험하므로 그 조건에서 확인한다.
+    """
+    from sim.agents.driver import DriverPhase
+    from sim.world.simulation import SimConfig, Simulation
+
+    sim = Simulation(
+        lot,
+        config=SimConfig(seed=0, arrival_rate=0.25, dwell_mean=200.0, prefill=0.7,
+                         returning_share=0.6, noncompliant_share=0.35),
+    )
+    worst = 0.0
+    waiting_since: dict = {}
+    for _frame in sim.run(400.0, stride=50):
+        arriving = {v.plate for v in sim.vehicles if v.driver.phase is DriverPhase.ARRIVING}
+        for plate in arriving:
+            waiting_since.setdefault(plate, sim.t)
+            worst = max(worst, sim.t - waiting_since[plate])
+        for plate in [p for p in waiting_since if p not in arriving]:
+            del waiting_since[plate]
+
+    assert worst < 90.0, f"어떤 차가 입구에서 {worst:.0f}초를 기다렸습니다"

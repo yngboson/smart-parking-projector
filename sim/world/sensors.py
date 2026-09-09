@@ -103,6 +103,15 @@ class VehicleView(Protocol):
     vehicle_class: VehicleClass
     spec: VehicleSpec
     state: SelfState
+
+    entered_t: float
+    """이 차가 주차장에 들어온 시각.
+
+    **번호판만으로는 재방문을 구분할 수 없다.** 같은 차가 나갔다가 돌아오면 번호판이
+    같으므로, "목록에 계속 있었다"와 "나갔다가 돌아왔다"가 구분되지 않는다.
+    실제로 그래서 입구 ANPR 이 침묵했다 (D-026).
+    """
+
     center: Vec2
     """차체 중심. 매 틱 한 번만 계산된 값이다 (`WorldVehicle.refresh`)."""
 
@@ -128,7 +137,11 @@ class SensorSuite:
         self._slot_grid = grid_index((sid, s.center) for sid, s in lot.slots.items())
         self._node_grid = grid_index((nid, n.pos) for nid, n in lot.nodes.items())
 
-        self._present: dict[PlateId, VehicleClass] = {}
+        self._present: dict[PlateId, float] = {}
+        """지금 주차장 안에 있는 번호판 → 그 차의 입장 시각.
+
+        시각까지 들고 있는 이유는 D-026 을 보라. 번호판만 보면 재방문을 놓친다.
+        """
         self._occupancy: dict[SlotId, PlateId | None] = {}
         self._candidate: dict[SlotId, tuple[PlateId, float]] = {}
         self._last_node: dict[PlateId, NodeId] = {}
@@ -192,11 +205,25 @@ class SensorSuite:
     # ── 입구/출구 ANPR ─────────────────────────────────────────────
 
     def _gate_entries(self, t: float, vehicles: Sequence[VehicleView]) -> list[SensorEvent]:
+        """입구 ANPR. 카메라 밑을 **지나갈 때마다** 울린다.
+
+        번호판이 처음 보이는 경우만 울리게 했더니, 나갔다가 같은 틱에 돌아온 차가
+        기록되지 않았다 — 관제는 그 차를 "나가는 중"으로 믿은 채 영원히 자리를 주지
+        않았고, 그 차가 입구에 서서 200대의 진입을 막았다 (D-026).
+
+        그래서 입장 시각까지 함께 본다. 시각이 달라졌다면 다른 방문이다.
+        """
         out: list[SensorEvent] = []
         for v in vehicles:
-            if v.plate not in self._present:
-                self._present[v.plate] = v.vehicle_class
-                out.append(VehicleEntered(t=t, plate=v.plate, vehicle_class=v.vehicle_class))
+            was = self._present.get(v.plate)
+            if was == v.entered_t:
+                continue
+            if was is not None:
+                # 나간 것을 보지도 못했는데 다시 들어와 있다 — 나갔다 온 것이다.
+                # 퇴장을 먼저 흘려야 관제가 자리와 유도선을 정리하고 새로 시작한다.
+                out.append(VehicleExited(t=t, plate=v.plate))
+            self._present[v.plate] = v.entered_t
+            out.append(VehicleEntered(t=t, plate=v.plate, vehicle_class=v.vehicle_class))
         return out
 
     def _gate_exits(self, t: float, vehicles: Sequence[VehicleView]) -> list[SensorEvent]:
