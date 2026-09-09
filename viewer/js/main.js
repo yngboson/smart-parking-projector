@@ -20,6 +20,7 @@ import { EventFlash } from "/js/highlight.js";
 import { Palette } from "/js/palette.js";
 import { VehicleModels, buildContactShadow, pickBodyColor } from "/js/vehicles.js";
 import { TraceSource, connectBestSource, listTraces } from "/js/source.js";
+import { ModelTuner } from "/js/model_tuner.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -74,10 +75,15 @@ export async function boot() {
   );
 
   wireControls(stage, world);
+
+  // STL 조정판. 모델이 하나도 없으면 스스로 숨는다 (9단계).
+  const tuner = new ModelTuner(THREE, stage, models, lot, $("tuner"));
+  if (tuner.mount()) $("tuner-panel").style.display = "";
+
   $("loading").classList.add("gone");
 
   // 브라우저 콘솔에서 장면을 들여다볼 수 있게 해둔다 (디버깅용)
-  globalThis.__sim = { stage, world, lot };
+  globalThis.__sim = { stage, world, lot, models, tuner };
 
   let last = performance.now();
   const loop = (now) => {

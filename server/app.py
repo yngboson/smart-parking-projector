@@ -22,7 +22,7 @@ import json
 from dataclasses import asdict, replace
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -115,13 +115,90 @@ def list_scenarios() -> JSONResponse:
     return JSONResponse({"scenarios": out, "default": DEFAULT_SCENARIO})
 
 
+MODELS_JSON = VIEWER / "models" / "models.json"
+
+TUNABLE = {
+    "file": str,
+    "autoFitLength": float,
+    "upAxis": str,
+    "headingOffsetDeg": float,
+    "pivot": str,
+    "scaleOverride": float,
+    "offset": list,
+}
+"""조정 UI 가 쓸 수 있는 항목과 형. **여기 없는 키는 저장하지 않는다.**
+
+브라우저에서 온 JSON 을 그대로 파일에 쓰면 뷰어 설정 파일이 아무 데이터나 담는
+통로가 된다. 화이트리스트로 걸러 두면 그 통로가 없다.
+"""
+
+
 @app.get("/api/models")
 def get_models() -> JSONResponse:
-    """차량 3D 모델 설정. STL 이 없으면 뷰어가 저폴리 박스로 폴백한다."""
-    path = VIEWER / "models" / "models.json"
-    if not path.exists():
-        return JSONResponse({"models": {}})
-    return JSONResponse(json.loads(path.read_text(encoding="utf-8")))
+    """차량 3D 모델 설정 + 폴더에 실제로 있는 STL 파일 목록.
+
+    파일 목록을 함께 주는 이유: STL 을 폴더에 넣은 사람이 `models.json` 을 손으로
+    고치지 않아도 뷰어에서 골라 등록할 수 있어야 한다 (docs/PLAN.md 9단계).
+    """
+    body = (
+        json.loads(MODELS_JSON.read_text(encoding="utf-8"))
+        if MODELS_JSON.exists()
+        else {"models": {}}
+    )
+    body["files"] = sorted(
+        p.name for p in (VIEWER / "models").glob("*.stl") if p.is_file()
+    )
+    return JSONResponse(body)
+
+
+@app.put("/api/models")
+async def put_models(request: Request) -> JSONResponse:
+    """조정 UI 가 맞춘 값을 `models.json` 에 되쓴다.
+
+    STL 은 단위도 축 방향도 파일마다 다르다. 그 값을 눈으로 맞춰 놓고 저장하지
+    못하면 브라우저를 새로고침할 때마다 처음부터 다시 맞춰야 한다 — 발표 준비
+    중에 그럴 시간은 없다.
+
+    **화이트리스트 밖의 키와 경로가 섞인 파일 이름은 버린다.** 브라우저에서
+    오는 값이므로 그대로 믿지 않는다.
+    """
+    body = await request.json()
+    incoming = body.get("models")
+    if not isinstance(incoming, dict):
+        return JSONResponse({"error": "models 가 객체여야 합니다"}, status_code=400)
+
+    clean: dict[str, dict] = {}
+    for name, cfg in incoming.items():
+        if not isinstance(name, str) or not isinstance(cfg, dict):
+            continue
+        entry = {}
+        for key, kind in TUNABLE.items():
+            if key not in cfg or cfg[key] is None:
+                continue
+            value = cfg[key]
+            if key == "file":
+                # 경로가 아니라 이 폴더 안의 파일 이름이어야 한다
+                value = Path(str(value)).name
+                if not (VIEWER / "models" / value).exists():
+                    continue
+            elif kind is float and isinstance(value, (int, float)):
+                value = float(value)
+            elif not isinstance(value, kind):
+                continue
+            entry[key] = value
+        if entry.get("file"):
+            clean[name] = entry
+
+    existing = (
+        json.loads(MODELS_JSON.read_text(encoding="utf-8"))
+        if MODELS_JSON.exists()
+        else {}
+    )
+    existing["models"] = clean
+    MODELS_JSON.write_text(
+        json.dumps(existing, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    return JSONResponse({"models": clean, "saved": len(clean)})
 
 
 # ── 라이브 스트림 ─────────────────────────────────────────────────
@@ -251,6 +328,24 @@ def _maybe_float(v) -> float | None:
 
 RUNS.mkdir(exist_ok=True)
 app.mount("/runs", StaticFiles(directory=RUNS), name="runs")
+@app.middleware("http")
+async def no_stale_viewer_code(request: Request, call_next):
+    """뷰어 코드는 **항상 다시 확인하게** 한다.
+
+    이 뷰어에는 빌드 스텝이 없다 (D-004). 파일 이름에 해시가 붙지 않으므로 브라우저는
+    `/js/main.js` 를 한 번 받으면 계속 쓴다 — ES 모듈은 특히 끈질기게 캐시된다.
+    고친 코드가 화면에 안 나타나는데 원인이 캐시라는 것을 알아채기까지가 오래 걸리고,
+    그동안 있지도 않은 버그를 쫓게 된다. 실제로 그랬다.
+
+    `no-cache` 는 "저장하지 마라"가 아니라 "쓰기 전에 물어봐라"이므로, 안 바뀐
+    파일은 304 로 끝나 비용이 거의 없다.
+    """
+    response = await call_next(request)
+    if request.url.path.startswith(("/js/", "/models/")):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 app.mount("/js", StaticFiles(directory=VIEWER / "js"), name="js")
 app.mount("/vendor", StaticFiles(directory=VIEWER / "vendor"), name="vendor")
 app.mount("/models", StaticFiles(directory=VIEWER / "models"), name="models")

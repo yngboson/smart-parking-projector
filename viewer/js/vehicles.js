@@ -129,18 +129,49 @@ export class VehicleModels {
     this.THREE = THREE;
     this.loader = new STLLoader();
     this.configs = {};
+    this.files = [];
     this.cache = new Map();
+    /** 원본 STL. 설정을 바꿀 때마다 파일을 다시 받지 않기 위해 들고 있는다. */
+    this.raw = new Map();
     this.failed = new Set();
   }
 
   async load(url = "/api/models") {
     try {
-      const res = await fetch(url);
-      const data = await res.json();
+      const data = await fetch(url).then((r) => r.json());
       this.configs = data.models ?? {};
+      this.files = data.files ?? [];
     } catch {
       this.configs = {};
+      this.files = [];
     }
+  }
+
+  /**
+   * 설정을 바꾸고 그 모델의 캐시를 버린다. 다음에 만드는 차량부터 새 값이 적용된다.
+   *
+   * **원본 STL 은 그대로 둔다.** `applyModelTransform` 이 지오메트리를 제자리에서
+   * 고치므로, 원본을 안 갖고 있으면 값을 한 번 바꿀 때마다 회전과 스케일이
+   * 누적된다 — 조정 UI 가 성립하지 않는다.
+   */
+  configure(name, patch) {
+    this.configs[name] = { ...(this.configs[name] ?? {}), ...patch };
+    this.cache.delete(name);
+    this.failed.delete(name);
+    return this.configs[name];
+  }
+
+  /** 서버에 되쓴다. 브라우저를 새로고침해도 맞춰 둔 값이 남는다. */
+  async save() {
+    const res = await fetch("/api/models", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ models: this.configs }),
+    });
+    if (!res.ok) throw new Error(`저장 실패 (${res.status})`);
+    const body = await res.json();
+    this.configs = body.models ?? {};
+    return body;
   }
 
   /** 등록된 STL 모델 이름들. 비어 있으면 전부 박스 폴백이다. */
@@ -156,7 +187,11 @@ export class VehicleModels {
     if (!cfg.file) { this.failed.add(name); return null; }
 
     try {
-      const geo = await this.loader.loadAsync(`/models/${cfg.file}`);
+      if (!this.raw.has(cfg.file)) {
+        this.raw.set(cfg.file, await this.loader.loadAsync(`/models/${cfg.file}`));
+      }
+      // 원본을 복제해서 고친다 — 원본을 고치면 값을 바꿀 때마다 변환이 누적된다
+      const geo = this.raw.get(cfg.file).clone();
       applyModelTransform(this.THREE, geo, cfg);
       this.cache.set(name, geo);
       return geo;

@@ -192,3 +192,52 @@ def test_reset_restarts_with_the_new_settings() -> None:
 
     # 지정하지 않은 값은 그대로 유지된다
     assert s.config.dwell_mean == LiveSession().config.dwell_mean
+
+
+# ── STL 조정 (9단계) ──────────────────────────────────────────────
+
+
+def test_models_endpoint_lists_files_on_disk(client: TestClient) -> None:
+    """폴더에 STL 을 넣은 사람이 `models.json` 을 손으로 고치지 않아도 되어야 한다.
+
+    파일 목록이 안 오면 뷰어의 조정판이 고를 것이 없어 아예 뜨지 않는다.
+    """
+    body = client.get("/api/models").json()
+    assert "models" in body and isinstance(body["models"], dict)
+    assert isinstance(body.get("files"), list)
+    assert all(f.endswith(".stl") for f in body["files"])
+
+
+def test_saving_a_model_rejects_paths_and_unknown_keys(client: TestClient) -> None:
+    """조정판이 보내는 것은 **브라우저에서 온 값**이다. 그대로 파일에 쓰지 않는다.
+
+    화이트리스트 밖의 키가 통과하면 뷰어 설정 파일이 아무 데이터나 담는 통로가 되고,
+    파일 이름에 경로가 섞이면 저장소 밖을 가리킬 수 있다.
+    """
+    res = client.put(
+        "/api/models",
+        json={
+            "models": {
+                "evil": {"file": "../../etc/passwd", "autoFitLength": 4.7},
+                "sneaky": {"file": "nope.stl", "cmd": "rm -rf /"},
+            }
+        },
+    )
+    assert res.status_code == 200
+    saved = res.json()["models"]
+    assert "evil" not in saved, "경로가 섞인 파일 이름이 통과했습니다"
+    assert "sneaky" not in saved, "폴더에 없는 파일이 통과했습니다"
+
+
+def test_saving_a_bad_body_is_refused(client: TestClient) -> None:
+    assert client.put("/api/models", json={"models": "아니오"}).status_code == 400
+
+
+def test_viewer_code_is_never_served_stale(client: TestClient) -> None:
+    """뷰어에는 빌드 스텝이 없어 파일 이름에 해시가 붙지 않는다 (D-004).
+
+    캐시를 막지 않으면 고친 코드가 화면에 안 나타나고, 원인이 캐시라는 것을
+    알아채기까지 있지도 않은 버그를 쫓게 된다. 실제로 그랬다.
+    """
+    for path in ("/js/main.js", "/js/model_tuner.js"):
+        assert client.get(path).headers.get("cache-control") == "no-cache", path
