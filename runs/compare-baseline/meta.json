@@ -1,0 +1,43 @@
+{
+ "scenario": "busy",
+ "scenario_file": "/Users/suitopii/Documents/univprojects/parking_lot_automator/sim/scenarios/busy.yaml",
+ "description": "주말 오후. 절반쯤 차 있는 상태에서 시작해 점유율 60~70% 를 오간다. 좋은 자리는 이미 임자가 있고 빈 자리는 안쪽에 남아 있어, 안내와 운전자의 선호가 어긋나기 시작한다.",
+ "duration": 900.0,
+ "cells": 20,
+ "allocators": [
+  "greedy_nearest",
+  "none"
+ ],
+ "recoveries": [
+  "global_rematch"
+ ],
+ "seeds": [
+  0,
+  1,
+  2,
+  3,
+  4,
+  5,
+  6,
+  7,
+  8,
+  9
+ ],
+ "config": {
+  "dt": 0.1,
+  "seed": 0,
+  "arrival_rate": 0.2,
+  "dwell_mean": 400.0,
+  "dwell_min": 30.0,
+  "max_guided": 20,
+  "returning_share": 0.35,
+  "prefill": 0.5,
+  "entry_clearance": 9.0,
+  "slot_sensor_mode": "anpr",
+  "noncompliant_share": 0.35,
+  "compliance_low": 0.3,
+  "compliance_high": 0.75,
+  "vision_enabled": false
+ },
+ "wall_s": 432.5
+}

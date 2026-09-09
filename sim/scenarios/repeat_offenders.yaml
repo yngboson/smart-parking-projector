@@ -1,0 +1,33 @@
+name: repeat_offenders
+description: >
+  **평판이 의미를 갖는 조건.** `rush_hour` 에서 복구 전략 6종을 비교했더니
+  `local_reassign` · `fairness_weighted` · `reputation_aware` 셋이 **글자 그대로
+  같은 숫자**를 냈습니다. 버그가 아니라 조건 때문입니다 — 재 봤더니 신뢰도가 떨어진
+  번호판이 220개 중 7개뿐이고, 두 번 재배정된 차량은 **0대**였습니다. 평판을 쌓을
+  재료도, 우선권을 줄 상습 피해자도 없었습니다.
+
+  그래서 같은 번호판이 여러 번 드나드는 조건을 따로 만듭니다. 체류를 짧게,
+  재방문을 높게, 실행을 길게 잡아 한 번호판이 하루에 대여섯 번 오게 합니다.
+  이 조건에서도 셋이 같다면 그때는 전략 설계를 의심해야 합니다.
+
+  발표에서는 `rush_hour` 와 나란히 놓으세요. "평판 기반 전략은 평판이 쌓일 만큼
+  같은 사람이 반복해서 올 때만 의미가 있다"가 결론입니다.
+
+simulation:
+  arrival_rate: 0.25
+  dwell_mean: 250.0         # 짧게 세우고 나간다 — 회전이 빨라야 재방문이 쌓인다
+  dwell_min: 60.0
+  prefill: 0.6
+  returning_share: 0.85     # 새 번호판보다 단골이 많다
+  noncompliant_share: 0.50
+  compliance_low: 0.20
+  compliance_high: 0.55
+  max_guided: 20
+
+control:
+  allocator: greedy_nearest
+  recovery: global_rematch
+
+run:
+  duration: 1800.0          # 한 번호판이 대여섯 번 드나들 만큼
+  seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
