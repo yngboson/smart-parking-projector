@@ -5,7 +5,26 @@
 <title>주차 배정 알고리즘 — 공부 로드맵</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+KR:wght@400;600;700&family=Noto+Sans+Mono:wght@400;600&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+KR:wght@400;600;700&display=swap" rel="stylesheet" />
+
+<!-- 수식은 KaTeX 로 조판한다. 교과서와 같은 Computer Modern 계열 세리프가 나온다.
+     구분자로 $$ 와 $ 를 쓴다 — 백슬래시가 없어 이스케이프 사고가 없고,
+     auto-render 는 pre·code 태그를 기본으로 건너뛰므로 본문의 셸 프롬프트($)는 안전하다. -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css" />
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/contrib/auto-render.min.js"></script>
+<script>
+  window.addEventListener("load", function () {
+    renderMathInElement(document.body, {
+      delimiters: [
+        { left: "$$", right: "$$", display: true },
+        { left: "$",  right: "$",  display: false }
+      ],
+      throwOnError: false,
+      errorColor: "#b00"
+    });
+  });
+</script>
 <style>
   @page { size: A4; margin: 20mm 18mm 20mm 18mm; }
 
@@ -111,9 +130,12 @@
     border-left: 3.5pt solid var(--accent);
     padding: 5mm 6mm 4mm;
     margin: 0 0 6mm;
-    page-break-inside: avoid;
     background: #fdfcfa;
+    /* 카드가 한 쪽보다 길면 쪼개지게 둔다. 통째로 넘기면 앞 쪽이 통으로 비고,
+       두어 줄만 다음 쪽으로 흘러 빈 페이지가 생긴다. */
+    page-break-inside: auto;
   }
+  .field h3, .field .one { page-break-after: avoid; }
   .field h3 { margin-top: 0; font-size: 12pt; }
   .field .one {
     font-size: 10.5pt; color: var(--accent); font-weight: 600;
@@ -148,23 +170,33 @@
   .ask ol { margin: 0; padding-left: 5mm; font-size: 9.8pt; }
 
   /* ── 수식 ───────────────────────────────────────────── */
+  /* 교과서 수식은 세리프다. 산세리프 수식은 눈이 읽는 방식이 달라 잘 안 읽힌다.
+     그래서 KaTeX 로 조판한다 — Computer Modern 계열이 나온다. */
   .eq {
-    font-family: "Noto Sans Mono", "Cambria Math", "Consolas", monospace;
     background: #fbfaf7; border: 1px solid var(--rule);
-    padding: 3.4mm 5mm; margin: 3mm 0 4mm;
-    font-size: 9.6pt; line-height: 1.85; text-align: left;
-    white-space: pre; overflow-x: auto; page-break-inside: avoid;
+    padding: 4.5mm 5mm; margin: 3.5mm 0 4.5mm;
+    text-align: center; page-break-inside: avoid;
   }
-  .eq .c { color: var(--faint); }
-  var { font-style: italic; font-family: "Cambria Math", serif; }
+  .eq .katex { font-size: 1.04em; }
+  .eq .caption {
+    margin-top: 3mm; font-size: 9pt; color: var(--faint);
+    text-align: center; line-height: 1.65;
+  }
+  .eq .caption b { color: var(--soft); font-weight: 600; }
+  var {
+    font-style: italic;
+    font-family: "Cambria Math", "Times New Roman", "Batang", serif;
+  }
 
+  /* 코드도 세리프 고정폭으로. Courier New 는 슬랩 세리프이고,
+     한글은 바탕체(BatangChe)가 고정폭 명조다. */
   code {
-    font-family: "Noto Sans Mono", "Consolas", monospace;
+    font-family: "Courier New", "BatangChe", "Batang", monospace;
     font-size: 0.88em; background: var(--code);
     padding: 0.3mm 1.1mm; border-radius: 1.5px;
   }
   pre {
-    font-family: "Noto Sans Mono", "Consolas", monospace;
+    font-family: "Courier New", "BatangChe", "Batang", monospace;
     background: #fbfaf7; border: 1px solid var(--rule);
     padding: 3.4mm 4.5mm; font-size: 8.6pt; line-height: 1.6;
     overflow-x: auto; margin: 0 0 4mm; text-align: left;
@@ -410,11 +442,20 @@
     못 읽는 경우가 대부분입니다. 아래 식을 소리 내어 읽을 수 있으면 3장은
     통과입니다.
   </p>
-  <div class="eq">min<sub>x</sub>  Σ<sub>i∈I</sub> Σ<sub>j∈J</sub>  c<sub>ij</sub> · x<sub>ij</sub>
-                                  <span class="c">← 목적함수</span>
-s.t.  Σ<sub>j</sub> x<sub>ij</sub> = 1   (모든 i ∈ I)   <span class="c">← 제약</span>
-      Σ<sub>i</sub> x<sub>ij</sub> ≤ 1   (모든 j ∈ J)
-      x<sub>ij</sub> ∈ {0, 1}</div>
+  <div class="eq">
+    $$
+      \begin{aligned}
+        \min_{x} \quad &amp; \sum_{i \in I} \sum_{j \in J} c_{ij}\, x_{ij} \\
+        \text{s.t.} \quad &amp; \sum_{j \in J} x_{ij} = 1 \quad (\forall\, i \in I) \\
+        &amp; \sum_{i \in I} x_{ij} \le 1 \quad (\forall\, j \in J) \\
+        &amp; x_{ij} \in \{0,\, 1\}
+      \end{aligned}
+    $$
+    <div class="caption">
+      첫 줄이 <b>목적함수</b>(최소로 만들 것), 아래 세 줄이 <b>제약</b>(반드시 지킬 것).
+      <br />기호 <b>s.t.</b> 는 <i>subject to</i>, “다음을 만족하면서”라는 뜻입니다.
+    </div>
+  </div>
   <p style="margin-bottom:0">
     “집합 <var>I</var> 의 각 원소 <var>i</var> 에 대해 <var>x</var><sub>ij</sub> 를
     <var>j</var> 에 대해 모두 더하면 1이 되도록 하면서, 비용의 총합을 최소로
@@ -536,8 +577,14 @@ s.t.  Σ<sub>j</sub> x<sub>ij</sub> = 1   (모든 i ∈ I)   <span class="c">←
       비교한 비율이 <strong>경쟁비(competitive ratio)</strong>입니다.
     </dd>
     <dd>
-      <div class="eq">경쟁비 = <span style="border-bottom:1px solid #1a1a1a">온라인 알고리즘의 비용</span>
-         최적(사후에 전부 알고 푼) 비용</div>
+      <div class="eq">
+        $$ \text{competitive ratio} \;=\; \frac{\mathrm{ALG}}{\mathrm{OPT}} $$
+        <div class="caption">
+          <b>ALG</b> 는 하나씩 도착하는 대로 결정한 온라인 알고리즘의 비용,
+          <b>OPT</b> 는 나중에 전부 알고 나서 푼 최적 비용입니다.
+          <br />1 에 가까울수록 “미래를 몰라서 본 손해”가 적습니다.
+        </div>
+      </div>
       우리 프로젝트에서 실제로 확인된 사실: 배치로 묶으려 했던
       <code>hungarian_batch</code> 는 <strong>배치가 한 번도 만들어지지 않아</strong>
       탐욕법과 같은 답을 냈습니다. 입구 대기가 뒷차 진입을 막기 때문입니다.
@@ -598,10 +645,27 @@ s.t.  Σ<sub>j</sub> x<sub>ij</sub> = 1   (모든 i ∈ I)   <span class="c">←
 
     <dt>우리 데이터에 바로 적용해 보면</dt>
     <dd>
-      <div class="eq"><span class="c">busy 시나리오, λ = 0.20 대/초, 900초 (제공 부하 180대)</span>
-
-무안내 : 118.2대 처리  →  λ<sub>eff</sub> = 0.131,  W = 53.7 s  →  <b>L = 7.05 대</b>
-안내   : 179.0대 처리  →  λ<sub>eff</sub> = 0.199,  W = 28.4 s  →  <b>L = 5.65 대</b></div>
+      <div class="eq">
+        $$ L \;=\; \lambda_{\text{eff}} \cdot W $$
+        <div class="caption">
+          <b>L</b> 계 안의 평균 대수 &nbsp;·&nbsp;
+          <b>λ<sub>eff</sub></b> 실효 처리율(대/초) &nbsp;·&nbsp;
+          <b>W</b> 평균 체류시간
+        </div>
+      </div>
+      <table>
+        <tr><th></th><th>주차 완료</th><th>λ<sub>eff</sub></th>
+            <th><var>W</var> (초)</th><th><var>L</var> (대)</th></tr>
+        <tr><td><strong>무안내</strong></td><td class="num">118.2</td>
+            <td class="num">0.131</td><td class="num">53.7</td>
+            <td class="num"><strong>7.05</strong></td></tr>
+        <tr><td><strong>안내</strong></td><td class="num">179.0</td>
+            <td class="num">0.199</td><td class="num">28.4</td>
+            <td class="num"><strong>5.65</strong></td></tr>
+      </table>
+      <p style="font-size:9pt;color:var(--faint);margin:-3mm 0 3.5mm">
+        busy 시나리오 · 도착률 0.20 대/초 · 900초 → 제공 부하 180대
+      </p>
       통로에서 돌아다니는 차가 평균 7.05대에서 5.65대로 줄었습니다. 더 중요한 것은
       <strong>무안내는 180대 중 118대만 처리했다</strong>는 사실입니다 — 이미 용량 밖입니다.
       안내는 179대를 처리했으니 아직 여유가 있습니다.
@@ -643,7 +707,14 @@ s.t.  Σ<sub>j</sub> x<sub>ij</sub> = 1   (모든 i ∈ I)   <span class="c">←
             (유량 = 밀도 × 속도) 와 <strong>기본도</strong>: 밀도가 늘면 속도가 줄고,
             어느 지점을 넘으면 유량마저 줄어든다 → 그 꼭짓점이 <strong>용량</strong></li>
         <li><strong>BPR 함수</strong> — 혼잡을 비선형으로 값매기는 표준 방식
-            <div class="eq" style="margin:2mm 0">t<sub>e</sub>(x) = t<sub>e</sub><sup>0</sup> · [ 1 + α (x / u<sub>e</sub>)<sup>β</sup> ]     <span class="c">보통 α = 0.15, β = 4</span></div>
+            <div class="eq" style="margin:2.5mm 0">
+              $$ t_e(x) \;=\; t_e^{0} \left[\, 1 + \alpha \left( \frac{x}{u_e} \right)^{\beta} \right] $$
+              <div class="caption">
+                <b>x</b> 간선 <i>e</i> 의 부하 &nbsp;·&nbsp;
+                <b>u<sub>e</sub></b> 그 간선의 용량 &nbsp;·&nbsp;
+                보통 α = 0.15, β = 4
+              </div>
+            </div>
             핵심은 <var>u</var><sub>e</sub>, 즉 <strong>용량</strong>입니다. 부하가 용량에
             가까워지면 비용이 폭발합니다. 지금 우리 비용 함수에는 용량 개념이 없습니다.</li>
         <li><strong>Wardrop 균형</strong> — 이 분야의 핵심 개념
@@ -699,8 +770,13 @@ s.t.  Σ<sub>j</sub> x<sub>ij</sub> = 1   (모든 i ∈ I)   <span class="c">←
       다루는 틀이 MDP 이고, 항공권·호텔의 재고 관리와 같은 구조입니다.
     </dd>
     <dd>
-      <div class="eq">c̃(i, j) = c(i, j)  +  λ<sub>j</sub>
-                     <span class="c">↑ 자리 j 의 기회비용</span></div>
+      <div class="eq">
+        $$ \tilde{c}(i,\, j) \;=\; c(i,\, j) \;+\; \lambda_j $$
+        <div class="caption">
+          <b>λ<sub>j</sub></b> 는 자리 <i>j</i> 의 <b>기회비용</b> —
+          “지금 이 자리를 내주면 앞으로 얼마나 손해인가”
+        </div>
+      </div>
     </dd>
 
     <dt>최소한 이것만</dt>
@@ -733,17 +809,27 @@ s.t.  Σ<sub>j</sub> x<sub>ij</sub> = 1   (모든 i ∈ I)   <span class="c">←
 <p class="lede">추상적인 이야기를 실제 숫자로 내려놓습니다. 이 장이 교수님과의 대화에서 가장 유용할 것입니다.</p>
 
 <h2>5.1 그래프로서의 주차장</h2>
-<div class="eq">G = (V, E)   방향 가중 그래프
+<div class="eq">
+  $$ G = (V,\, E) \qquad\qquad w(u,\, v) \;=\; \bigl\lVert\, \mathrm{pos}(v) - \mathrm{pos}(u) \,\bigr\rVert $$
+  <div class="caption">
+    방향 가중 그래프. 간선의 무게는 두 점 사이 <b>유클리드 거리</b> — 벡터의 크기입니다.
+  </div>
+</div>
 
-  |V| = 71      통로 위의 점 (여기에 통로 검지기가 있다고 가정)
-  |E| = 80      갈 수 있는 방향. <b>일방통행은 반대 간선이 아예 없다</b>
-  밀도          80 / 71² ≈ 1.6 %   — 아주 희소한 그래프
-
-  w(u, v) = ‖ pos(v) − pos(u) ‖      <span class="c">두 점 사이 유클리드 거리 (벡터의 크기)</span>
-
-  S     주차면 집합, |S| = 120
-  a(s)  주차면 s 의 접근 노드 ∈ V     <span class="c">그 자리 앞의 통로 위 점</span>
-  g     건물 출입구 좌표             <span class="c">여기서 가까운 자리가 인기 자리</span></div>
+<table>
+  <tr><th style="width:26mm">기호</th><th style="width:20mm">값</th><th>뜻</th></tr>
+  <tr><td>$|V|$</td><td class="num">71</td>
+      <td>통로 위의 점. 여기에 통로 검지기가 묻혀 있다고 가정합니다</td></tr>
+  <tr><td>$|E|$</td><td class="num">80</td>
+      <td>갈 수 있는 방향. <strong>일방통행은 반대 간선이 아예 없습니다</strong></td></tr>
+  <tr><td>밀도</td><td class="num">1.6 %</td>
+      <td>$80 / 71^{2}$ — 아주 희소한 그래프입니다</td></tr>
+  <tr><td>$S$</td><td class="num">120</td><td>주차면 집합</td></tr>
+  <tr><td>$a(s) \in V$</td><td>—</td>
+      <td>주차면 $s$ 의 접근 노드. 그 자리 앞의 통로 위 점입니다</td></tr>
+  <tr><td>$g$</td><td>—</td>
+      <td>건물 출입구 좌표. 여기서 가까운 자리가 인기 자리입니다</td></tr>
+</table>
 
 <p>
   구조는 3 × 3 격자입니다. 수평 통로 3개는 <strong>일방통행이 엇갈리게</strong>
@@ -753,19 +839,39 @@ s.t.  Σ<sub>j</sub> x<sub>ij</sub> = 1   (모든 i ∈ I)   <span class="c">←
 </p>
 
 <h2>5.2 문제의 정식화</h2>
-<div class="eq"><b>주어진 것</b>
-  차량 집합 I = {1, …, n},  빈 자리 집합 J ⊆ S
-  각 차량의 현재 위치 v<sub>i</sub> ∈ V
+<h3>주어진 것</h3>
+<div class="eq">
+  $$ I = \{1,\, \ldots,\, n\} \qquad J \subseteq S \qquad v_i \in V $$
+  <div class="caption">
+    차량 집합 · 빈 자리 집합 · 각 차량이 지금 있는 통로 위의 점
+  </div>
+</div>
 
-<b>비용</b>
-  c(i, j) = w<sub>drive</sub> · d<sub>G</sub>(v<sub>i</sub>, a(j))  +  w<sub>walk</sub> · ‖ pos(j) − g ‖
-                 <span class="c">↑ 그래프 위 최단거리</span>        <span class="c">↑ 직선 도보거리</span>
+<h3>비용</h3>
+<div class="eq">
+  $$ c(i,\, j) \;=\; w_{\text{drive}} \cdot d_G\bigl(v_i,\, a(j)\bigr)
+     \;+\; w_{\text{walk}} \cdot \bigl\lVert\, \mathrm{pos}(j) - g \,\bigr\rVert $$
+  <div class="caption">
+    앞의 항은 <b>그래프 위 최단거리</b>(타고 가는 거리),
+    뒤의 항은 <b>직선 도보거리</b>(내려서 걷는 거리)입니다.
+  </div>
+</div>
 
-<b>찾는 것</b>
-  min  Σ<sub>i</sub> Σ<sub>j</sub> c(i,j) x<sub>ij</sub>
-  s.t. Σ<sub>j</sub> x<sub>ij</sub> = 1  ∀i     자리는 차량마다 하나
-       Σ<sub>i</sub> x<sub>ij</sub> ≤ 1  ∀j     한 자리에 한 대
-       x<sub>ij</sub> ∈ {0, 1}</div>
+<h3>찾는 것</h3>
+<div class="eq">
+  $$
+    \begin{aligned}
+      \min_{x} \quad &amp; \sum_{i \in I} \sum_{j \in J} c(i,\, j)\, x_{ij} \\
+      \text{s.t.} \quad &amp; \sum_{j \in J} x_{ij} = 1 \quad (\forall\, i \in I) \\
+      &amp; \sum_{i \in I} x_{ij} \le 1 \quad (\forall\, j \in J) \\
+      &amp; x_{ij} \in \{0,\, 1\}
+    \end{aligned}
+  $$
+  <div class="caption">
+    <b>차량마다 자리를 정확히 하나씩</b>, <b>한 자리에는 한 대만</b>,
+    그러면서 <b>총비용은 최소로</b>.
+  </div>
+</div>
 
 <div class="box">
   <div class="label">여기서 이미 보이는 긴장</div>

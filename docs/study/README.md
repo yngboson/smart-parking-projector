@@ -41,8 +41,30 @@ python parking_topology.py
   "file://$PWD/docs/study/study-guide.html"
 ```
 
-> `--virtual-time-budget` 은 웹폰트(Noto Serif KR)가 내려올 시간을 벌어 줍니다.
-> 이 값이 없으면 한글이 세리프가 아닌 기본 글꼴로 인쇄됩니다.
+> `--virtual-time-budget` 은 웹폰트와 **KaTeX** 가 내려와 조판을 마칠 시간을 벌어 줍니다.
+> 이 값이 없으면 수식이 렌더되기 전에 인쇄되어 LaTeX 소스가 그대로 찍힙니다.
+
+## 수식을 고칠 때
+
+문서 전체가 세리프입니다. **수식은 KaTeX 로 조판**하므로 교과서와 같은
+Computer Modern 계열이 나옵니다. 산세리프 수식은 눈이 읽는 방식이 달라
+잘 안 읽히기 때문입니다.
+
+- 구분자는 `$$ … $$`(별행) 와 `$ … $`(줄 안)입니다.
+  `\[ … \]` 를 쓰지 마세요 — 백슬래시가 셸·에디터를 거치며 한 겹 벗겨지면
+  구분자가 `[` 로 바뀌어 본문의 `E[X]`, `O(n)` 같은 대괄호까지 수식으로
+  잡아먹습니다. 실제로 그렇게 깨진 적이 있습니다.
+- `aligned` 안의 행 구분자는 백슬래시 **두 개**여야 합니다. 스크립트로 파일을
+  고칠 때 이게 한 개로 줄어들기 쉬우니, 고친 뒤에는 PDF 를 열어
+  수식이 실제로 렌더됐는지 눈으로 확인하세요.
+- 확인 방법:
+
+  ```python
+  import pymupdf
+  d = pymupdf.open("docs/study/주차배정-공부로드맵.pdf")
+  bad = [i + 1 for i, p in enumerate(d) if "sum_{" in p.get_text()]
+  print("수식 실패 페이지:", bad or "없음")
+  ```
 
 ## 내용의 근거
 
