@@ -2,7 +2,8 @@
 
 > 다른 세션이 이 저장소를 이어받을 때 **가장 먼저 읽어야 하는 문서**입니다.
 > 진행 상황과 다음 작업은 `docs/HANDOFF.md`, 설계 배경은 `docs/PLAN.md`,
-> 결정의 근거는 `docs/DECISIONS.md` 에 있습니다.
+> 결정의 근거는 `docs/DECISIONS.md` 에 있습니다. 배정의 수리 모형과 혼잡 측정
+> 설계는 `docs/ALLOCATION_MODEL.md` 입니다.
 
 ## 이 프로젝트가 무엇인가
 

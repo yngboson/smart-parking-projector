@@ -166,6 +166,7 @@ pytest tests/
 | [`docs/PLAN.md`](docs/PLAN.md) | 전체 구현 계획과 로드맵 |
 | [`docs/DECISIONS.md`](docs/DECISIONS.md) | 설계 결정과 그 근거 (ADR) |
 | [`docs/HANDOFF.md`](docs/HANDOFF.md) | **인수인계** — 진행 상황, 미해결 이슈, 다음 작업 |
+| [`docs/ALLOCATION_MODEL.md`](docs/ALLOCATION_MODEL.md) | 배정의 **수리 모형**과 "혼잡이 실제로 줄어드는가" 실험 설계 |
 
 ---
 
