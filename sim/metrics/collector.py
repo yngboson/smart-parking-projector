@@ -45,13 +45,40 @@ class LedgerRow:
     parked_t: float | None = None
     exited_t: float | None = None
 
+    visits: int = 0
+    """이 번호판이 주차장에 들어온 횟수.
+
+    **단골은 같은 번호판으로 돌아온다** (`SimConfig.returning_share`). 원장은
+    번호판별이므로(D-008) 방문을 세지 않으면 여러 번의 방문이 한 줄로 뭉쳐,
+    두 번째 이후의 주차가 통계에서 통째로 사라진다. 재방문 85% 짜리 조건에서는
+    처리량이 절반 아래로 잘못 나온다.
+    """
+
+    parked_visits: int = 0
+    """그중 실제로 자리에 세운 횟수."""
+
     park_time_s: float | None = None
-    """입장에서 주차 완료까지. 못 세웠으면 None."""
+    """**마지막** 방문의 입장→주차 완료 시간. 못 세웠으면 None."""
 
     driven_m: float = 0.0
+    """**이번 방문에** 굴러간 거리(m). 단골이 돌아오면 0 부터 다시 센다."""
+
+    driven_total_m: float = 0.0
+    """지난 방문들까지의 주행거리 합. 이번 방문 몫은 `driven_m` 에 따로 있다."""
+
     ideal_m: float | None = None
     detour_m: float | None = None
     extra_time_s: float | None = None
+
+    detour_total_m: float = 0.0
+    """모든 방문의 우회 거리 합. 보상 원장이 실제로 쓸 값이다 (D-008).
+
+    한 번에 얼마나 돌았는지가 아니라 **이 사람이 전부 합쳐 얼마나 손해를 봤는지**가
+    보상의 근거이기 때문이다.
+    """
+
+    extra_time_total_s: float = 0.0
+    """모든 방문의 초과 시간 합."""
 
     slot_id: str | None = None
 
@@ -68,12 +95,20 @@ class LedgerRow:
     was_taker: bool = False
 
     prefilled: bool = False
-    """실행 시작부터 세워져 있던 차. 들어온 적이 없으므로 통계에서 뺀다.
+    """**첫 방문이** 실행 시작부터 세워져 있던 것인가.
 
-    빼지 않으면 주행거리 0m·소요시간 0초짜리 행이 수십 개 섞여 평균이 무너진다 —
-    처음 재 봤을 때 평균 우회거리가 **-90m** 로 나왔다. 초기점유 60%면 그런 행이
-    72개다.
+    그 방문은 들어오는 장면이 없으므로 통계에서 뺀다. 빼지 않으면 주행거리 0m·
+    소요시간 0초짜리 표본이 수십 개 섞여 평균이 무너진다 — 처음 재 봤을 때 평균
+    우회거리가 **-90m** 로 나왔다. 초기점유 60%면 그런 방문이 72개다.
+
+    **첫 방문만이다.** 그 차가 나갔다가 단골로 돌아오면 그때부터는 보통 차와
+    똑같이 센다. 영구히 빼면 재방문이 많은 조건에서 표본의 절반이 사라진다.
     """
+
+    @property
+    def counted_visits(self) -> int:
+        """통계에 넣는 방문 수. 처음부터 세워져 있던 첫 방문은 뺀다."""
+        return max(0, self.visits - (1 if self.prefilled else 0))
 
 
 class MetricsCollector:
@@ -88,6 +123,16 @@ class MetricsCollector:
         self.cruise_speed = cruise_speed or DrivingSkill.for_lot(lot).cruise_speed
         self.rows: dict[PlateId, LedgerRow] = {}
         self._ideal: dict[SlotId, float | None] = {}
+
+        self._entered: dict[PlateId, float] = {}
+        """번호판 → 지금 진행 중인 방문의 입장 시각. 방문이 바뀌는 순간을 잡는다."""
+
+        self._parks: list[tuple[float, float | None, float | None]] = []
+        """완료된 주차마다 (소요시간, 우회거리, 초과시간).
+
+        요약 통계는 **번호판이 아니라 방문 단위**로 낸다. 단골이 다섯 번 왔으면
+        다섯 번 다 세야 처리량과 평균이 맞는다.
+        """
 
     # ── 수집 ──────────────────────────────────────────────────────
 
@@ -104,11 +149,21 @@ class MetricsCollector:
                 )
                 self.rows[v.plate] = row
 
+            if self._entered.get(v.plate) != v.entered_t:
+                # 새 방문이다 (처음이거나, 나갔다 돌아왔거나)
+                self._entered[v.plate] = v.entered_t
+                row.visits += 1
+                row.entered_t = v.entered_t
+                row.parked_t = None
+                row.driven_total_m = round(row.driven_total_m + row.driven_m, 2)
+                row.driven_m = 0.0
+
             row.driven_m = v.odometer
             if v.parked_slot is not None and row.parked_t is None:
                 row.parked_t = v.parked_t if v.parked_t is not None else sim.t
                 row.slot_id = str(v.parked_slot)
-                self._settle(row)
+                row.parked_visits += 1
+                self._settle(row, counted=row.counted_visits > 0)
 
         if frame is not None:
             self._events(frame.events)
@@ -120,15 +175,29 @@ class MetricsCollector:
 
     # ── 내부 ──────────────────────────────────────────────────────
 
-    def _settle(self, row: LedgerRow) -> None:
-        """주차가 끝난 차량의 우회·초과를 확정한다."""
+    def _settle(self, row: LedgerRow, counted: bool = True) -> None:
+        """방금 끝난 **한 번의 방문**을 확정한다.
+
+        단골이 돌아올 때 월드는 차량 객체를 새로 만든다 (`Simulation._make_vehicle`).
+        주행거리계도 0 부터 다시 도므로 `driven_m` 은 이미 이번 방문의 몫이다.
+        원장에 남기는 누계는 따로 더한다 — 보상의 근거는 "이 사람이 전부 합쳐 얼마나
+        손해를 봤는가"이기 때문이다 (D-008).
+        """
         ideal = self._ideal_distance(SlotId(row.slot_id)) if row.slot_id else None
         row.ideal_m = None if ideal is None else round(ideal, 2)
         row.park_time_s = round((row.parked_t or 0.0) - row.entered_t, 2)
+
         if ideal is None:
+            if counted:
+                self._parks.append((row.park_time_s, None, None))
             return
+
         row.detour_m = round(row.driven_m - ideal, 2)
         row.extra_time_s = round(row.park_time_s - ideal / self.cruise_speed, 2)
+        row.detour_total_m = round(row.detour_total_m + row.detour_m, 2)
+        row.extra_time_total_s = round(row.extra_time_total_s + row.extra_time_s, 2)
+        if counted:
+            self._parks.append((row.park_time_s, row.detour_m, row.extra_time_s))
 
     def _ideal_distance(self, slot_id: SlotId) -> float | None:
         """입구에서 그 자리까지, **완벽하게 안내를 따랐다면** 달렸을 거리(m).
@@ -219,22 +288,28 @@ class MetricsCollector:
         비교하려는 것은 사고가 났을 때의 꼬리다. `fairness_weighted` 처럼 평균을
         희생해 최악을 줄이는 전략은 평균만으로는 나쁜 전략으로 보인다.
         """
-        live = [r for r in self.rows.values() if not r.prefilled]
-        parked = [r for r in live if r.park_time_s is not None]
-        times = [r.park_time_s for r in parked]
-        detours = [r.detour_m for r in parked if r.detour_m is not None]
-        extras = [r.extra_time_s for r in parked if r.extra_time_s is not None]
+        live = [r for r in self.rows.values() if r.counted_visits > 0]
+        live_plates = {r.plate for r in live}
+
+        # **방문 단위로 센다.** 단골이 다섯 번 왔으면 다섯 번 다 세야 처리량이 맞는다.
+        parks = [p for p in self._parks]
+        times = [p[0] for p in parks]
+        detours = [p[1] for p in parks if p[1] is not None]
+        extras = [p[2] for p in parks if p[2] is not None]
 
         return {
-            "parked": len(parked),
-            "seen": len(live),
+            "parked": len(parks),
+            "seen": sum(r.counted_visits for r in live),
+            "plates": len(live_plates),
             "park_time_mean": _mean(times),
             "park_time_p95": _pct(times, 0.95),
             "detour_mean_m": _mean(detours),
             "detour_p95_m": _pct(detours, 0.95),
             "extra_time_mean_s": _mean(extras),
             "extra_time_p95_s": _pct(extras, 0.95),
-            "driven_total_m": round(sum(r.driven_m for r in live), 1),
+            "driven_total_m": round(
+                sum(r.driven_m + r.driven_total_m for r in live), 1
+            ),
             "reroutes": sum(r.reroute_count for r in live),
             "reshuffles": sum(r.reshuffle_count for r in live),
             "victims": sum(1 for r in live if r.was_victim),

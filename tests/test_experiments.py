@@ -32,12 +32,14 @@ def lot() -> LotMap:
     return build_grid_lot(GridSpec())
 
 
-def run(lot: LotMap, seed: int = 1, **kw) -> tuple[Simulation, MetricsCollector]:
+def run(
+    lot: LotMap, seed: int = 1, duration: float = SHORT, **kw
+) -> tuple[Simulation, MetricsCollector]:
     settings = {"arrival_rate": 0.3, "prefill": 0.4, "noncompliant_share": 0.35, **kw}
     config = SimConfig(seed=seed, **settings)
     sim = Simulation(lot, config=config)
     collector = MetricsCollector(lot)
-    for frame in sim.run(SHORT, stride=10):
+    for frame in sim.run(duration, stride=10):
         collector.observe(sim, frame)
     collector.finish(sim)
     return sim, collector
@@ -63,26 +65,50 @@ def test_the_ledger_records_but_does_not_price(lot: LotMap, tmp_path) -> None:
     assert not priced, f"원장에 보상 산정이 섞여 들어갔습니다: {priced}"
 
 
-def test_prefilled_cars_are_kept_out_of_the_statistics(lot: LotMap) -> None:
-    """들어온 적이 없는 차가 평균을 끌어내린다.
+def test_the_prefilled_first_visit_is_kept_out_of_the_statistics(lot: LotMap) -> None:
+    """들어오는 장면이 없었던 방문이 평균을 끌어내린다.
 
-    처음 쟀을 때 평균 우회거리가 **-90m** 로 나왔다. 초기점유 60% 면 주행거리 0m
-    짜리 행이 72개다.
+    처음 쟀을 때 평균 우회거리가 **-90m** 로 나왔다 — 주행거리 0m·소요시간 0초짜리
+    표본이 초기점유 60% 면 72개다. 다만 **첫 방문만** 빼야 한다. 그 차가 나갔다가
+    단골로 돌아오면 그때부터는 보통 차와 똑같이 세야 한다.
     """
     _sim, collector = run(lot, prefill=0.6)
     rows = collector.ledger()
 
     prefilled = [r for r in rows if r["prefilled"]]
     assert prefilled, "초기점유 60% 인데 처음부터 있던 차가 하나도 없습니다"
-    # 들어오는 장면이 없었다 = 주차 소요시간이 0 에 붙어 있다.
-    # (나중에 출차하며 굴러가므로 주행거리는 0 이 아닐 수 있다.)
-    assert all((r["park_time_s"] or 0.0) < 1.0 for r in prefilled)
 
     summary = collector.summary()
-    assert summary["seen"] == len(rows) - len(prefilled)
-    assert abs(summary["detour_mean_m"]) < 20.0, (
-        f"평균 우회거리가 {summary['detour_mean_m']}m 입니다 — 안 들어온 차가 섞였습니다"
+    assert summary["seen"] == sum(
+        max(0, r["visits"] - (1 if r["prefilled"] else 0)) for r in rows
     )
+    assert summary["seen"] < sum(r["visits"] for r in rows), "빠진 방문이 없습니다"
+    assert abs(summary["detour_mean_m"]) < 20.0, (
+        f"평균 우회거리가 {summary['detour_mean_m']}m 입니다 — 안 들어온 방문이 섞였습니다"
+    )
+
+
+def test_a_regular_visitor_is_counted_every_time(lot: LotMap) -> None:
+    """**단골은 같은 번호판으로 돌아온다.**
+
+    원장은 번호판별이므로(D-008) 방문을 세지 않으면 여러 번의 방문이 한 줄로 뭉쳐
+    두 번째 이후의 주차가 통계에서 통째로 사라진다. 재방문 85% 조건에서 처리량이
+    절반 아래로 잘못 나왔다.
+    """
+    _sim, collector = run(
+        lot, duration=360.0, returning_share=0.9, dwell_mean=60.0, prefill=0.0
+    )
+    rows = collector.ledger()
+
+    regulars = [r for r in rows if r["visits"] > 1]
+    assert regulars, "재방문 90% 인데 두 번 이상 온 번호판이 없습니다"
+
+    summary = collector.summary()
+    assert summary["seen"] > summary["plates"], (
+        f"방문 {summary['seen']}회 = 번호판 {summary['plates']}개 — 재방문을 안 세고 있습니다"
+    )
+    # 여러 번 온 사람의 누계가 이번 방문 몫보다 크다 — 보상의 근거가 되는 값이다
+    assert any(r["detour_total_m"] != r["detour_m"] for r in regulars)
 
 
 def test_a_perfectly_guided_run_has_almost_no_detour(lot: LotMap) -> None:
