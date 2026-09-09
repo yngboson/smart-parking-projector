@@ -1,0 +1,47 @@
+{
+ "scenario": "rush_hour",
+ "scenario_file": "/Users/suitopii/Documents/univprojects/parking_lot_automator/sim/scenarios/rush_hour.yaml",
+ "description": "**이 연구가 답하려는 상황.** 점유율이 90% 를 넘고 좋은 자리는 남지 않는다. 관제가 안쪽 자리를 배정하는 순간 비협조 운전자는 눈앞의 앞자리를 차지하고, 그 자리의 원래 주인은 갈 곳을 잃는다. 복구 전략의 차이가 여기서 드러난다.\n전원 협조(noncompliant_share: 0.0)로 한 번 더 돌려 대조군을 만드세요. 같은 혼잡도에서 강탈이 0 건이면 측정에 바닥 노이즈가 없다는 뜻입니다.",
+ "duration": 900.0,
+ "cells": 60,
+ "allocators": [
+  "greedy_nearest"
+ ],
+ "recoveries": [
+  "chain_shift",
+  "fairness_weighted",
+  "global_rematch",
+  "local_reassign",
+  "reputation_aware",
+  "reserve_pool"
+ ],
+ "seeds": [
+  0,
+  1,
+  2,
+  3,
+  4,
+  5,
+  6,
+  7,
+  8,
+  9
+ ],
+ "config": {
+  "dt": 0.1,
+  "seed": 0,
+  "arrival_rate": 0.25,
+  "dwell_mean": 700.0,
+  "dwell_min": 30.0,
+  "max_guided": 20,
+  "returning_share": 0.35,
+  "prefill": 0.7,
+  "entry_clearance": 9.0,
+  "slot_sensor_mode": "anpr",
+  "noncompliant_share": 0.35,
+  "compliance_low": 0.3,
+  "compliance_high": 0.75,
+  "vision_enabled": false
+ },
+ "wall_s": 1536.8
+}
