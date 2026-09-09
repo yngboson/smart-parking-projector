@@ -68,9 +68,40 @@ grep -rn "compliance" sim/control/       # 결과가 비어 있어야 정상
 **베이스라인** — 안내가 없을 때 운전자가 알아서 찾아다니는 경우와 나란히 돌려,
 탐색 시간·주행거리·통로 혼잡도를 비교합니다.
 
+**할당 전략 4종** — 어느 자리를 줄 것인가
+
+| 전략 | 요지 |
+|---|---|
+| `greedy_nearest` *(기본값)* | 도착 즉시 최소비용 자리 — 기준선 |
+| `hungarian_batch` | 여러 대를 함께 놓고 최적 매칭 |
+| `congestion_aware` | 통로 혼잡을 **제곱으로** 보고 흐름을 분산 |
+| `zone_late_binding` | 입구에선 구역만, 자리는 구역에 들어와서 확정 |
+
 **시나리오** — 실험 조건은 코드가 아니라 `sim/scenarios/*.yaml` 에 있습니다.
-`light`(여유) · `busy`(주말 오후) · `rush_hour`(만차). 강탈은 **자리가 귀할 때만**
-일어납니다 — 빈 주차장에서는 비협조 운전자도 남의 자리를 건드릴 이유가 없습니다.
+`light`(여유) · `busy`(주말 오후) · `rush_hour`(만차) · `baseline`(무안내) ·
+`repeat_offenders`(단골이 많은 조건). 강탈은 **자리가 귀할 때만** 일어납니다 —
+빈 주차장에서는 비협조 운전자도 남의 자리를 건드릴 이유가 없습니다.
+
+---
+
+## 결과 한 장
+
+같은 시드로 안내 모드와 무안내 모드를 나란히 돌린 것입니다 (`busy`, 시드 10개, 900초).
+
+| 지표 | 무안내 | 안내 | |
+|---|---|---|---|
+| 평균 주차소요 | 71.9초 | **29.9초** | −58% |
+| p95 주차소요 | 223.2초 | **55.2초** | −75% |
+| 평균 우회거리 | 53.0m | **2.1m** | −96% |
+| 주차 완료 | 90.1대 | **125.0대** | +39% |
+
+**꼬리가 더 극적입니다.** 유도선이 없을 때 진짜 손해를 보는 사람은 평균적인
+운전자가 아니라 끝까지 자리를 못 찾은 사람입니다.
+
+복구 전략 비교에서는 **기본 전략(`global_rematch`)이 가장 나빴습니다** — 사고마다
+모두를 재배치하는 것이 예약된 빈 자리를 계속 새로 만들어, 비협조 운전자에게 기회를
+주기 때문입니다. 전체 표와 그래프는 [`docs/HANDOFF.md`](docs/HANDOFF.md) 와
+`runs/*/report.md` 에 있습니다.
 
 ---
 
@@ -88,18 +119,28 @@ uvicorn server.app:app --reload            # → http://localhost:8000
 python -m sim.world.simulation --duration 300 --arrival-rate 0.15
 
 # 발표용 녹화본 만들기
-python -m sim.metrics.trace_writer --duration 240 --out runs/demo
+python -m sim.metrics.trace_writer --duration 300 --out runs/demo
+
+# 전략 비교 실험 → 비교표 + 박스플롯
+python -m sim.experiments.run_matrix --scenario rush_hour --seeds 30
+python -m sim.experiments.report runs/<run_id>
+
+# 안내 vs 무안내 (발표의 첫 슬라이드)
+python -m sim.experiments.run_matrix --scenario busy --compare-baseline --seeds 10
 
 # 테스트
-pytest tests/ -v
+pytest tests/
 ```
 
 뷰어는 **라이브 스트리밍**(WebSocket, 배속·일시정지·도착률 조작)과
 **녹화본 재생**(`trace.jsonl`)을 모두 지원하며 화면은 동일합니다.
 서버에 연결하지 못하면 자동으로 녹화본으로 넘어갑니다.
 
-> 전략 비교 배치 실험(`sim.experiments.run_matrix`)은 8단계에서 만듭니다.
-> 지금 어디까지 왔는지는 [`docs/HANDOFF.md`](docs/HANDOFF.md) 를 보세요.
+녹화본에서는 **타임라인을 끌 수 있습니다.** 강탈이 일어나면 그 자리에 고리가
+퍼지고, 이벤트 목록의 줄을 누르면 카메라가 그 자리를 비춥니다. 안내 목록의 줄을
+누르면 그 차를 따라갑니다.
+
+> 지금 어디까지 왔는지와 전체 실측값은 [`docs/HANDOFF.md`](docs/HANDOFF.md) 에 있습니다.
 
 ---
 
