@@ -161,11 +161,17 @@ def turn_angle_total(points: Sequence[Vec2]) -> float:
     return total
 
 
+MITER_LIMIT = 4.0
+"""꼭짓점을 밀어낼 때 허용하는 최대 배율. 되돌아가는 각에서 발산하는 것을 막는다."""
+
+
 def offset_polyline(points: Sequence[Vec2], offset: float) -> list[Vec2]:
     """폴리라인을 진행 방향 기준 오른쪽으로 민다. 음수면 왼쪽.
 
-    꼭짓점에서는 앞뒤 구간의 이등분선 방향으로 민다. 각 구간을 따로 밀면
-    코너에서 선이 끊어진다.
+    꼭짓점에서는 이등분선 방향으로 밀되 **1/cos(반각) 만큼 더 밀어낸다**. 이 배율이
+    없으면 밀어낸 선이 원래 코너를 통과하지 못하고 안쪽으로 잘려, 직각 코너가
+    비스듬한 대각선 한 구간으로 변한다. 통로 폭이 넓을수록 그 대각선이 길어진다 —
+    14m 통로에서 13m 짜리 사선이 생겼다 (D-023).
 
     **세 계층이 같은 함수를 쓴다.** 관제는 이걸로 바닥에 그릴 유도선을 만들고,
     운전자는 안내가 없을 때 스스로 주행 차선을 잡는다. 둘이 다른 계산을 쓰면
@@ -178,6 +184,7 @@ def offset_polyline(points: Sequence[Vec2], offset: float) -> list[Vec2]:
     out: list[Vec2] = []
     last = len(pts) - 1
     for i, p in enumerate(pts):
+        scale = 1.0
         if i == 0:
             d = (pts[1] - pts[0]).normalized()
         elif i == last:
@@ -188,7 +195,10 @@ def offset_polyline(points: Sequence[Vec2], offset: float) -> list[Vec2]:
             d = (a + b).normalized()
             if d.length < 1e-6:      # 되돌아가는 꼭짓점 — 앞 구간 기준으로 민다
                 d = a
-        out.append(p + Vec2(d.y, -d.x) * offset)
+            else:
+                cos_half = d.dot(a)
+                scale = min(MITER_LIMIT, 1.0 / cos_half) if cos_half > 1e-6 else MITER_LIMIT
+        out.append(p + Vec2(d.y, -d.x) * (offset * scale))
     return out
 
 

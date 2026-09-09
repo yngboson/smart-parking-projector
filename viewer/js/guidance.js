@@ -82,11 +82,15 @@ const FRAG = /* glsl */ `
 `;
 
 /**
- * 궤적을 따라 리본 메시를 만든다. 궤적의 점들은 이미 차선 오프셋이 적용된
- * 중심선이므로 여기서는 좌우로 halfWidth 만큼 벌리기만 하면 된다.
+ * 궤적을 따라 리본 메시를 만든다.
+ *
+ * 꼭짓점에서는 **마이터 조인**으로 벌린다 — 앞뒤 구간 법선의 이등분선 방향으로
+ * 1/cos(반각) 만큼. 이등분선 방향으로만 halfWidth 를 벌리면 직각 코너에서 띠가
+ * 30% 좁아져 잘록해 보인다. 노선도처럼 각을 살리려면 코너에서도 폭이 같아야 한다.
  */
 function buildRibbonGeometry(THREE, track, halfWidth) {
   const points = track.points;
+  const frames = track.frames;
   const n = points.length;
   const pos = new Float32Array(n * 2 * 3);
   const arc = new Float32Array(n * 2);
@@ -96,22 +100,16 @@ function buildRibbonGeometry(THREE, track, halfWidth) {
   let acc = 0;
   for (let i = 0; i < n; i++) {
     const p = points[i];
-    const prev = points[Math.max(0, i - 1)];
-    const next = points[Math.min(n - 1, i + 1)];
-    if (i > 0) acc += p.distanceTo(prev);
+    if (i > 0) acc += p.distanceTo(points[i - 1]);
 
-    // XZ 평면상의 접선과 그 수직
-    let tx = next.x - prev.x;
-    let tz = next.z - prev.z;
-    const tl = Math.hypot(tx, tz) || 1;
-    tx /= tl; tz /= tl;
-    const nx = -tz, nz = tx;
+    const { nx, nz, miter } = frames[i];
+    const w = halfWidth * miter;
 
     for (const sgn of [-1, 1]) {
       const k = i * 2 + (sgn < 0 ? 0 : 1);
-      pos[k * 3] = p.x + nx * halfWidth * sgn;
+      pos[k * 3] = p.x + nx * w * sgn;
       pos[k * 3 + 1] = p.y;
-      pos[k * 3 + 2] = p.z + nz * halfWidth * sgn;
+      pos[k * 3 + 2] = p.z + nz * w * sgn;
       arc[k] = acc;
       side[k] = sgn;
     }

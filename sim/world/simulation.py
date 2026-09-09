@@ -323,7 +323,7 @@ class Simulation:
         return Perception(
             t=self.t,
             pose_forward_clearance=gap,
-            lead_speed=leader.state.speed if leader is not None else 0.0,
+            lead_speed=_closing_speed(v, leader),
             lead_is_parking=leader.driver.hazards if leader is not None else False,
             stop_distance=self.traffic.stop_distance(v),
             visible_slots=self._visible_slots(v),
@@ -746,3 +746,16 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+def _closing_speed(me: "WorldVehicle", leader: "WorldVehicle | None") -> float:
+    """앞차가 **내 진행 방향으로** 얼마나 빨리 멀어지는가 (m/s).
+
+    앞차의 속력을 그대로 쓰면 안 된다. 교차로에서 옆으로 가로지르는 차나 후진으로
+    빠져나오는 차의 속력을 '앞차가 그 속도로 달아나는 중'으로 읽고, 뒤차가
+    가속해 버린다. 필요한 값은 속력이 아니라 **내 방향으로의 성분**이다.
+    """
+    if leader is None:
+        return 0.0
+    v = leader.state.velocity_with(leader.state.gear)
+    return max(0.0, v * leader.state.pose.forward.dot(me.state.pose.forward))

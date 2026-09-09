@@ -16,15 +16,15 @@
   "compliance_high": 0.75,
   "vision_enabled": false
  },
- "frames": 800,
- "duration": 239.8,
+ "frames": 1199,
+ "duration": 239.7,
  "kpi": {
-  "occupancy": 0.1917,
-  "avg_park_time": 21.3,
+  "occupancy": 0.1667,
+  "avg_park_time": 20.34,
   "reroutes": 0,
-  "active": 40,
-  "parked_total": 40,
+  "active": 30,
+  "parked_total": 38,
   "stolen": 0,
-  "forced_merges": 0
+  "forced_merges": 1
  }
 }

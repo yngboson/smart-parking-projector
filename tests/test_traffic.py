@@ -321,3 +321,131 @@ def test_parking_time_throttles_the_lot(lot: LotMap) -> None:
     assert parked[20.0] < parked[2.0], (
         f"주차가 10배 오래 걸리는데 처리량이 그대로다 ({parked})"
     )
+
+
+# ── 앞차와 뒤차 ───────────────────────────────────────────────────
+
+
+def test_a_car_behind_is_never_the_leader_even_mid_turn() -> None:
+    """조향 중에도 뒤차는 앞차가 아니다.
+
+    원호를 각도로만 재면 원을 한 바퀴 돌아 뒤차에 닿는다. 조향각이 클수록 반경이
+    작아 그 한 바퀴가 짧아지고, 최대 조향에서는 **뒤 5m 옆 10m** 의 차가 12m 앞의
+    앞차로 읽혔다. 뒷차를 보고 감속하면 정체가 앞이 아니라 뒤에서 전파된다.
+    """
+    spec = VehicleSpec()
+    for steer in (0.0, 0.2, 0.4, spec.max_steer, -spec.max_steer):
+        me = rest(0.0, 0.0, 0.0, steer=steer)
+        for pos in (Pose(-5.0, 10.0, 0.0), Pose(-5.0, -10.0, 0.0), Pose(-12.0, 0.0, 0.0)):
+            assert math.isinf(gap(me, spec, footprint(pos, spec))), (
+                f"조향 {steer:+.2f} 에서 뒤차 {pos.position.as_tuple()} 를 앞차로 봤습니다"
+            )
+
+
+def test_the_front_car_of_an_overlapping_pair_is_free_to_go() -> None:
+    """추돌해 겹친 두 대가 **둘 다** 기어가면 그 통로는 영원히 굳는다.
+
+    꼭짓점만 보면 나를 들이받은 뒷차의 앞범퍼가 내 궤적 안에 들어와, 앞차도
+    '앞이 막혔다'고 읽는다. 앞뒤는 차체 중심끼리 비교해야 한다.
+    """
+    spec = VehicleSpec()
+    front, rear = rest(10.0, 0.0, 0.0), rest(9.9, 0.0, 0.0)
+
+    assert math.isinf(gap(front, spec, footprint(rear.pose, spec))), (
+        "뒤에서 받힌 차가 스스로 막혔다고 판단했습니다 — 빠져나갈 수 없습니다"
+    )
+    assert gap(rear, spec, footprint(front.pose, spec)) < 1.0, (
+        "들이받은 뒤차는 물러서야 합니다"
+    )
+
+
+def test_a_real_leader_is_still_seen_around_a_corner() -> None:
+    """뒤를 잘라내느라 앞을 못 보게 되면 안 된다."""
+    spec = VehicleSpec()
+    steer = 0.4
+    me = rest(0.0, 0.0, 0.0, steer=steer)
+    radius = spec.wheelbase / math.tan(steer)
+    for angle in (0.3, 0.8, 1.4):
+        ahead = Pose(radius * math.sin(angle), radius * (1 - math.cos(angle)), angle)
+        assert math.isfinite(gap(me, spec, footprint(ahead, spec))), (
+            f"원호 {math.degrees(angle):.0f}° 앞의 차를 놓쳤습니다"
+        )
+
+
+# ── 출구 규칙 ─────────────────────────────────────────────────────
+
+
+class _View:
+    """`VehicleView` 프로토콜을 만족하는 최소한의 차량. 교통 규칙만 시험한다."""
+
+    def __init__(self, plate: str, x: float, y: float, theta: float, speed: float = 3.0):
+        from sim.common.vehicle import body_center
+
+        self.plate = plate
+        self.spec = VehicleSpec()
+        self.vehicle_class = None
+        self.state = SelfState(pose=Pose(x, y, theta), speed=speed, steer=0.0, gear=1)
+        self.center = body_center(self.state.pose, self.spec)
+        self.version = 0
+
+
+def _towards_exit(lot: LotMap, back: float) -> tuple[float, float, float]:
+    """출구에서 back 미터 뒤, 출구를 향한 자세."""
+    gate = lot.node_pos(lot.exit_nodes[0])
+    approach = gate - lot.node_pos("H2-22")
+    d = approach.normalized()
+    return gate.x - d.x * back, gate.y - d.y * back, d.angle
+
+
+def test_only_one_car_at_a_time_enters_the_exit(lot: LotMap) -> None:
+    """출구는 한 번에 한 대만 지난다.
+
+    주차장의 모든 출차 차량이 출구 하나로 모인다. 차간거리만으로는 여러 대가
+    동시에 목으로 밀고 들어가고, 한 번 겹치면 서로를 못 빠져나가 출구 앞이 굳는다.
+    """
+    from sim.world.traffic import AisleTraffic
+
+    traffic = AisleTraffic(lot)
+    throat = traffic._throat
+
+    lead = _View("앞", *_towards_exit(lot, throat * 0.5))
+    follow = _View("뒤", *_towards_exit(lot, throat + 6.0))
+    traffic.update(0.0, [lead, follow])
+
+    assert math.isinf(traffic.stop_distance(lead)), "목에 들어간 차는 그대로 나간다"
+    assert math.isfinite(traffic.stop_distance(follow)), (
+        "목이 찼는데 뒤차가 그대로 밀고 들어갑니다"
+    )
+
+    # 앞차가 빠져나가면 뒤차가 풀린다
+    traffic.update(1.0, [follow])
+    assert math.isinf(traffic.stop_distance(follow)), "목이 비었는데도 세워 뒀습니다"
+
+
+def test_the_exit_throat_follows_the_aisle_width(lot: LotMap) -> None:
+    """규칙에 치수를 박아 두면 통로를 넓히는 순간 규칙만 옛 치수에 남는다."""
+    from sim.world.lot_builder import GridSpec, build_grid_lot
+    from sim.world.traffic import AisleTraffic
+
+    wide = build_grid_lot(GridSpec(aisle_width=20.0))
+    assert AisleTraffic(wide)._throat > AisleTraffic(lot)._throat
+
+
+def test_patience_does_not_push_a_car_into_an_occupied_merge(lot: LotMap) -> None:
+    """빠듯한 간격에 끼어드는 것은 운전이지만, 차가 서 있는 자리로 나가는 것은
+    운전이 아니라 관통이다. 예전에는 관통했고, 겹친 두 대가 함께 굳었다."""
+    from sim.world.traffic import PATIENCE, AisleTraffic
+
+    slot = next(s for s in lot.slots.values())
+    merge = lot.node_pos(slot.access_node)
+    leaving = _View("나가는차", slot.center.x, slot.center.y,
+                    (merge - slot.center).angle, speed=0.0)
+    parked_on_merge = _View("합류점의차", merge.x, merge.y, 0.0, speed=0.0)
+
+    traffic = AisleTraffic(lot)
+    for t in (0.0, PATIENCE + 5.0, PATIENCE * 3):
+        traffic.update(t, [leaving, parked_on_merge])
+        assert math.isfinite(traffic.stop_distance(leaving)), (
+            f"t={t}: 합류점에 차가 서 있는데 나갔습니다"
+        )
+    assert traffic.forced_merges == 0

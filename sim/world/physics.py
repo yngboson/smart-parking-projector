@@ -141,6 +141,13 @@ def forward_clearance(
     half = spec.width / 2.0 + LANE_MARGIN
     nose = spec.length - spec.rear_overhang
 
+    # 앞뒤 판정은 뒷축이 아니라 **차체 중심끼리** 비교해야 한다. 뒷축은 차체
+    # 중심보다 1.5m 쯤 뒤에 있어서, 그 기준으로 재면 나를 들이받은 뒷차의 중심이
+    # 여전히 '내 앞'으로 나온다.
+    to_centre = spec.length / 2.0 - spec.rear_overhang
+    mx = ox + ct * to_centre
+    my = oy + st * to_centre
+
     radius = (
         None
         if abs(behind.steer) < STRAIGHT_STEER
@@ -155,9 +162,15 @@ def forward_clearance(
     nearest = MAX_LOOK
     leader = -1
     for i, corners in enumerate(obstacles):
-        if centres is not None:
-            c0 = centres[i]
+        if corners:
+            c0 = centres[i] if centres is not None else _centroid(corners)
             if (c0.x - ox) ** 2 + (c0.y - oy) ** 2 > cutoff:
+                continue
+            # **차체 중심이 내 뒤에 있으면 앞차가 아니다.** 꼭짓점만 보면 나를
+            # 들이받은 뒷차의 앞범퍼가 내 궤적 안에 들어와, 앞차와 뒤차가 서로를
+            # 앞차로 읽고 **둘 다** 기어가는 상태로 굳는다. 한 대가 그렇게 굳으면
+            # 그 통로가 통째로 굳는다 — 출구 앞에 40대가 쌓인 원인이었다 (D-024).
+            if (c0.x - mx) * ct + (c0.y - my) * st <= 0.0:
                 continue
         for c in corners:
             dx, dy = c.x - ox, c.y - oy
@@ -173,6 +186,12 @@ def forward_clearance(
     return nearest - nose, leader
 
 
+def _centroid(corners: Sequence[Vec2]) -> Vec2:
+    """`centres` 를 넘겨받지 못했을 때의 차체 중심. 꼭짓점 넷의 평균이다."""
+    n = len(corners)
+    return Vec2(sum(c.x for c in corners) / n, sum(c.y for c in corners) / n)
+
+
 def _path_distance(u: float, w: float, radius: float | None, half: float) -> float | None:
     """내 진행 궤적을 따라 그 점까지 가는 거리. 궤적 폭을 벗어나면 None."""
     if radius is None:
@@ -181,6 +200,15 @@ def _path_distance(u: float, w: float, radius: float | None, half: float) -> flo
         return u
 
     # 회전 중심은 차의 왼쪽(좌회전) 또는 오른쪽(우회전)으로 radius 만큼.
+    #
+    # **뒤에 있는 것은 앞차가 아니다.** 원호를 각도로만 재면 원을 한 바퀴 돌아
+    # 뒤차에 닿는다 — 조향각이 클수록 반경이 작아 그 한 바퀴가 짧아지고, 최대
+    # 조향에서는 뒤차가 12m 앞의 앞차로 읽혔다. 뒷차를 보고 감속하는 차가 생기면
+    # 정체가 앞이 아니라 **뒤에서** 전파된다 (D-024). 직선일 때와 같은 기준으로
+    # 자른다: 내 진행 방향으로 앞에 있어야 한다.
+    if u <= 0.0:
+        return None
+
     reach = math.hypot(u, w - radius)
     if abs(reach - abs(radius)) > half:
         return None

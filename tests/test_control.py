@@ -314,3 +314,62 @@ def test_congestion_makes_a_busy_route_less_attractive(lot: LotMap) -> None:
     quiet = slot_cost(lot, sid, VehicleClass.SEDAN, route, {})
     busy = slot_cost(lot, sid, VehicleClass.SEDAN, route, {e: 2 for e in route.edges})
     assert busy > quiet
+
+
+# ── 유도선의 모양 ─────────────────────────────────────────────────
+
+
+def test_every_guidance_line_turns_at_right_angles(lot: LotMap) -> None:
+    """바닥에 그리는 선은 **지하철 노선도처럼** 직각으로만 꺾인다.
+
+    운전하는 것은 사람이므로 선이 차의 실제 궤적일 필요는 없다. 사람이 한눈에
+    읽을 수 있는 모양이면 된다.
+
+    이 검사가 실제로 잡는 것은 미관이 아니라 기하 버그다. 폴리라인을 옆으로 밀 때
+    꼭짓점을 이등분선 방향으로만 밀면 밀어낸 선이 원래 코너를 통과하지 못하고
+    안쪽으로 잘려, 직각 코너 하나가 **13m 짜리 사선**으로 변한다. 통로가 넓을수록
+    길어지므로 도면을 키우면 조용히 나빠진다.
+    """
+    import math
+
+    from sim.control.system import guidance_polyline
+
+    router = LaneRouter(lot)
+    entry = lot.entry_nodes[0]
+    checked = 0
+
+    for slot_id, slot in lot.slots.items():
+        route = router.route(entry, slot.access_node)
+        if route is None:
+            continue
+        checked += 1
+        for a, b in zip(poly := guidance_polyline(lot, route, slot_id), poly[1:]):
+            d = b - a
+            if d.length < 1e-6:
+                continue
+            off = math.degrees(math.atan2(d.y, d.x)) % 90.0
+            assert min(off, 90.0 - off) < 0.5, (
+                f"{slot_id} 유도선에 사선 구간이 있습니다: {d.length:.1f}m, "
+                f"{math.degrees(d.angle):.1f}°"
+            )
+
+    assert checked > 50, "검사한 유도선이 너무 적습니다"
+
+
+def test_the_line_is_drawn_on_the_lane_the_car_will_drive(lot: LotMap) -> None:
+    """직각으로 만드느라 선이 차선 밖으로 나가면 D-021 이 무너진다."""
+    from sim.common.geometry import Vec2
+    from sim.control.system import guidance_polyline
+
+    router = LaneRouter(lot)
+    slot_id = next(iter(lot.slots))
+    slot = lot.slots[slot_id]
+    route = router.route(lot.entry_nodes[0], slot.access_node)
+    poly = guidance_polyline(lot, route, slot_id)
+
+    aisle = min(a.width for a in lot.aisles)
+    for centre in route.polyline:
+        nearest = min(p.distance_to(centre) for p in poly)
+        assert nearest <= aisle / 2.0, (
+            f"유도선이 통로 밖으로 나갔습니다 (중심선에서 {nearest:.1f}m)"
+        )

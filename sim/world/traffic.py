@@ -77,7 +77,15 @@ PATIENCE = 12.0
 
 안전망이다. 없으면 붐비는 통로에 접한 차량이 영원히 못 나온다. 실제 운전자도
 언젠가는 나가고, 그때 통로가 잠깐 막히는 것 또한 현실이다.
+
+**다만 비집고 나가는 것은 '간격이 빠듯하다'까지다.** 합류점에 차가 실제로 서
+있으면 아무리 오래 기다려도 그 자리로 나갈 수는 없다 — 예전에는 나갔고, 두 차가
+겹친 채 둘 다 기어가는 상태(`CREEP_SPEED`)로 굳었다. 한 대가 그렇게 굳으면
+뒤로 줄줄이 겹쳐서, 출구 앞에 40대가 한 점에 쌓였다 (D-024).
 """
+
+EXIT_THROAT_RATIO = 0.5
+"""출구 목의 길이를 통로 폭의 몇 배로 잡는가. 승용차 1.5대 정도가 들어간다."""
 
 
 @dataclass(slots=True)
@@ -98,6 +106,13 @@ class AisleTraffic:
 
         self.forced_merges = 0
         """참다못해 나간 횟수. 통로가 얼마나 막혀 있었는지를 보여주는 지표다."""
+
+        widths = [a.width for a in lot.aisles]
+        self._throat = (min(widths) if widths else 6.0) * EXIT_THROAT_RATIO
+        """출구 목의 길이(m). 도면의 통로 폭에 연동된다 — 상수를 박아 두면
+        통로를 넓히는 순간 규칙만 옛 치수에 남는다."""
+
+        self._gates = [lot.node_pos(n) for n in lot.exit_nodes]
 
         self._waiting: dict[PlateId, _Waiting] = {}
         self._stop: dict[PlateId, float] = {}
@@ -137,6 +152,8 @@ class AisleTraffic:
         for plate in [p for p in self._waiting if p not in self.in_slot]:
             del self._waiting[plate]
 
+        self._resolve_exits(on_aisle)
+
     def stop_distance(self, vehicle: VehicleView) -> float:
         """이 차가 멈춰야 하는 지점까지의 거리. 나가도 되면 무한대."""
         return self._stop.get(vehicle.plate, math.inf)
@@ -152,11 +169,11 @@ class AisleTraffic:
             return
 
         wait = self._waiting.setdefault(v.plate, _Waiting(since=t))
-        if wait.released:
-            return
-        if t - wait.since >= PATIENCE:
-            wait.released = True
-            self.forced_merges += 1
+        blocked = self._occupied(merge, on_aisle)
+        if not blocked and (wait.released or t - wait.since >= PATIENCE):
+            if not wait.released:
+                wait.released = True
+                self.forced_merges += 1
             return
 
         # 주차면 입구에서 멈춘다 — 통로로 코를 내밀지 않는 자리다.
@@ -164,12 +181,12 @@ class AisleTraffic:
 
     def _conflict(self, merge: Vec2, on_aisle: Sequence[VehicleView]) -> bool:
         """지금 나가면 통로 차량과 부딪히는가."""
+        if self._occupied(merge, on_aisle):
+            return True
         for other in on_aisle:
             d = merge.distance_to(other.state.pose.position)
-            if d > MERGE_WINDOW:
+            if d > MERGE_WINDOW or d <= BLOCKED_RADIUS:
                 continue
-            if d <= BLOCKED_RADIUS:
-                return True  # 합류점이 물리적으로 막혀 있다
 
             speed = other.state.speed
             if speed < MOVING_SPEED:
@@ -180,6 +197,52 @@ class AisleTraffic:
             if d / speed < REQUIRED_GAP:
                 return True
         return False
+
+    def _resolve_exits(self, on_aisle: Sequence[VehicleView]) -> None:
+        """출구는 **한 번에 한 대만** 지난다.
+
+        출구 앞 한 대 길이 남짓을 '목'으로 잡고, 거기 차가 들어가 있는 동안 뒤차는
+        목 앞 정지선에서 기다린다. 목이 비면 다음 한 대가 들어간다.
+
+        왜 필요한가: 주차장의 모든 출차 차량이 출구 하나로 모인다. 차간거리만으로는
+        여러 대가 동시에 목으로 밀고 들어가고, 한 번 겹치면 서로를 못 빠져나가
+        출구 앞이 그대로 굳는다 — 40대가 한 점에 쌓인 것을 봤다 (D-024).
+        한 대씩 통과시키면 줄은 길어져도 **줄이 계속 움직인다.**
+
+        차단기를 세우는 것이 아니다. 목에 들어간 차는 감속하지 않고 그대로
+        빠져나간다 (D-020). 규칙은 **언제 들어가느냐**에만 걸린다.
+        """
+        for gate in self._gates:
+            approaching = []
+            for v in on_aisle:
+                to_gate = gate - v.state.pose.position
+                d = to_gate.length
+                if d > self._throat + MERGE_WINDOW:
+                    continue
+                if to_gate.dot(v.state.pose.forward) <= 0.0:
+                    continue          # 이미 지나갔거나 등지고 있다
+                approaching.append((d, v))
+
+            if not any(d <= self._throat for d, _ in approaching):
+                continue              # 목이 비어 있다 — 아무도 세우지 않는다
+
+            for d, v in approaching:
+                if d <= self._throat:
+                    continue          # 이미 들어와 버린 차를 후진시키지는 않는다
+                line = gate - (gate - v.state.pose.position).normalized() * self._throat
+                gap = _bumper_gap(v, line)
+                self._stop[v.plate] = min(self._stop.get(v.plate, math.inf), gap)
+
+    def _occupied(self, merge: Vec2, on_aisle: Sequence[VehicleView]) -> bool:
+        """합류점에 차가 실제로 서 있는가.
+
+        `_conflict` 의 나머지(간격 수용)와 달리 이것은 **인내로 넘길 수 없다.**
+        빠듯한 간격에 끼어드는 것은 운전이지만, 이미 차가 있는 자리로 나가는 것은
+        운전이 아니라 관통이다.
+        """
+        return any(
+            merge.distance_to(o.state.pose.position) <= BLOCKED_RADIUS for o in on_aisle
+        )
 
     def _is_heading_out(self, v: VehicleView, slot: Slot) -> bool:
         """통로 쪽으로 나가려는 자세인가. 후진 주차 중인 차는 해당되지 않는다."""
