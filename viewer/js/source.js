@@ -13,6 +13,7 @@
  *   pause() / resume() / setSpeed(x)
  *   stop()
  *   .live                      라이브인가 (파라미터를 바꿀 수 있는가)
+ *   .seekable                  타임라인을 끌 수 있는가 (녹화본만)
  */
 
 /** 라이브 스트림 — 서버가 시뮬레이션을 굴리며 밀어 넣는다. */
@@ -20,6 +21,7 @@ export class LiveSource {
   constructor(url = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`) {
     this.url = url;
     this.live = true;
+    this.seekable = false;
     this.label = "라이브";
     this.ws = null;
     this.hello = null;
@@ -81,12 +83,30 @@ export class TraceSource {
     this.live = false;
     this.label = `녹화본 ${meta.id ?? ""}`.trim();
 
+    this.seekable = true;
     this.frames = [];
     this.index = 0;
     this.speed = 1.0;
     this.paused = false;
     this._timer = null;
     this._onFrame = null;
+    this._onSeek = null;
+  }
+
+  /** 재생 위치가 바뀔 때마다 불린다. 스크러버가 이걸로 눈금을 따라간다. */
+  onProgress(fn) {
+    this._onSeek = fn;
+    this._report();
+  }
+
+  _report() {
+    const f = this.frames[Math.min(this.index, this.frames.length - 1)];
+    this._onSeek?.({
+      index: this.index,
+      count: this.frames.length,
+      t: f?.t ?? 0,
+      total: this.frames[this.frames.length - 1]?.t ?? 0,
+    });
   }
 
   async start(onFrame, onStatus) {
@@ -110,8 +130,62 @@ export class TraceSource {
     });
 
     this.index = 0;
+    this._report();
     this._tick();
     return this;
+  }
+
+  /**
+   * 타임라인의 한 지점으로 건너뛴다.
+   *
+   * **되감기가 그냥은 안 된다.** 주차면 상태와 유도선 폴리라인은 **델타**로만
+   * 실려 오기 때문이다 (D-005) — 300번째 프레임 하나만 그리면 그 전에 정해진
+   * 유도선과 주차면 색을 전부 잃는다. 그래서 0번부터 그 지점까지를 훑어
+   * **누적 상태 한 장**을 만들어 넘긴다.
+   *
+   * 프레임을 하나씩 다시 흘려보내지 않는 이유: 그러면 이벤트 로그와 입구 말풍선이
+   * 몇백 개 한꺼번에 쏟아진다. 건너뛴 구간의 사건은 이미 지나간 일이다.
+   */
+  seek(index) {
+    if (!this.frames.length) return;
+    this.index = Math.max(0, Math.min(this.frames.length - 1, Math.round(index)));
+    this._onFrame?.(this._stateAt(this.index), { seek: true });
+    this.index++;
+    this._report();
+
+    if (!this.paused) {
+      clearTimeout(this._timer);
+      this._tick();
+    }
+  }
+
+  seekFraction(u) {
+    this.seek(u * (this.frames.length - 1));
+  }
+
+  /** 0번부터 i번까지 누적한 상태 한 장. */
+  _stateAt(i) {
+    const polylines = new Map();      // 번호판 → 마지막으로 실려 온 폴리라인
+    const slots = new Map();          // 주차면 → 마지막 상태
+
+    for (let k = 0; k <= i; k++) {
+      const f = this.frames[k];
+      for (const g of f.guidance ?? []) {
+        if (g.polyline) polylines.set(g.id, { polyline: g.polyline, revision: g.revision });
+      }
+      for (const s of f.slots ?? []) slots.set(s.id, s.status);
+    }
+
+    const frame = this.frames[i];
+    return {
+      ...frame,
+      // 지금 살아 있는 유도선에만 폴리라인을 되붙인다
+      guidance: (frame.guidance ?? []).map((g) =>
+        g.polyline ? g : { ...g, ...(polylines.get(g.id) ?? {}) }
+      ),
+      slots: [...slots].map(([id, status]) => ({ id, status })),
+      events: [],                     // 건너뛴 구간의 사건은 이미 지나간 일이다
+    };
   }
 
   /**
@@ -127,6 +201,7 @@ export class TraceSource {
     }
     const frame = this.frames[this.index];
     this._onFrame?.(frame);
+    this._report();
 
     const next = this.frames[this.index + 1];
     const gap = next ? Math.max(0.01, next.t - frame.t) : 0.2;
@@ -136,6 +211,12 @@ export class TraceSource {
       () => { if (!this.paused) this._tick(); },
       (gap * 1000) / this.speed
     );
+  }
+
+  /** 한 프레임씩 앞뒤로. 일시정지 상태에서 사건 순간을 짚어 볼 때 쓴다. */
+  step(delta) {
+    this.pause();
+    this.seek(this.index - 1 + delta);
   }
 
   pause() { this.paused = true; }
@@ -159,7 +240,30 @@ export class TraceSource {
  * 이 순서가 발표 시나리오 그대로다 — 평소엔 라이브로 파라미터를 바꿔 보여주고,
  * 사고가 나면 녹화본이 자동으로 받는다.
  */
+/** 서버가 아는 녹화본 목록. 없거나 서버가 죽었으면 빈 배열. */
+export async function listTraces() {
+  try {
+    return (await fetch("/api/traces").then((r) => r.json())).traces ?? [];
+  } catch {
+    return [];
+  }
+}
+
+
 export async function connectBestSource(onFrame, onStatus) {
+  // `?trace=…` 가 붙어 있으면 그 녹화본을 튼다. 발표자가 특정 판을 지목할 수
+  // 있어야 한다 — "그 강탈이 나왔던 판 다시 보여주세요"에 답하는 통로다.
+  const wanted = new URLSearchParams(location.search).get("trace");
+  if (wanted) {
+    try {
+      const picked = new TraceSource(wanted, { id: wanted.split("/").at(-2) });
+      await picked.start(onFrame, onStatus);
+      return picked;
+    } catch {
+      // 지정한 녹화본이 없다 — 아래의 평소 순서로 넘어간다
+    }
+  }
+
   try {
     const live = new LiveSource();
     await live.start(onFrame, onStatus);
@@ -168,12 +272,7 @@ export async function connectBestSource(onFrame, onStatus) {
     // 라이브 실패 — 녹화본을 찾는다
   }
 
-  let traces = [];
-  try {
-    traces = (await fetch("/api/traces").then((r) => r.json())).traces ?? [];
-  } catch {
-    traces = [];
-  }
+  const traces = await listTraces();
   if (!traces.length) {
     onStatus?.({ connected: false, live: false, text: "재생할 것이 없습니다" });
     return null;

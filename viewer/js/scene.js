@@ -134,6 +134,7 @@ export class Stage {
   }
 
   setCamera(mode, instant = false) {
+    this.unfollow();
     const c = this.center ?? new THREE.Vector3();
     const r = this.radius ?? 60;
     const target =
@@ -149,6 +150,37 @@ export class Stage {
     } else {
       this._camTween = { from: this.camera.position.clone(), to: target, t: 0 };
     }
+  }
+
+  /**
+   * 한 대를 따라간다. 발표에서 "이 차가 지금 무엇을 겪고 있는가"를 보여주는 장치다.
+   *
+   * 카메라를 차에 **붙이지 않고** 시선만 옮긴다. 궤도 조작(회전·확대)을 그대로
+   * 남겨 두기 위해서다 — 따라가는 중에도 각도를 바꿔 보여줄 수 있어야 한다.
+   * 차가 사라지면 스스로 놓는다.
+   *
+   * @param getPoint 매 프레임 대상의 위치를 돌려주는 함수. null 이면 놓는다.
+   */
+  follow(getPoint) {
+    this._follow = getPoint;
+    this._camTween = null;
+    this.cameraMode = "follow";
+  }
+
+  unfollow() {
+    if (!this._follow) return;
+    this._follow = null;
+    this._recenter = { from: this.controls.target.clone(), t: 0 };
+  }
+
+  get following() {
+    return Boolean(this._follow);
+  }
+
+  /** 시선을 한 지점으로 부드럽게 옮긴다. 사건이 난 자리를 보여줄 때 쓴다. */
+  lookAtPoint(x, y) {
+    this.unfollow();
+    this._lookTo = { from: this.controls.target.clone(), to: new THREE.Vector3(x, 0, -y), t: 0 };
   }
 
   applyPreset(name) {
@@ -198,6 +230,28 @@ export class Stage {
       this.camera.position.lerpVectors(tw.from, tw.to, e);
       if (tw.t >= 1) this._camTween = null;
     }
+
+    if (this._follow) {
+      const p = this._follow();
+      if (!p) {
+        this.unfollow();                    // 대상이 주차장을 떠났다
+      } else {
+        // 프레임 사이를 지수 감쇠로 메운다. 그대로 찍으면 시선이 덜컥거린다.
+        const k = 1 - Math.exp(-6.0 * dt);
+        this.controls.target.lerp(new THREE.Vector3(p.x, 1.0, -p.y), k);
+      }
+    }
+
+    for (const key of ["_lookTo", "_recenter"]) {
+      const mv = this[key];
+      if (!mv) continue;
+      mv.t = Math.min(1, mv.t + dt * 1.4);
+      const e = 1 - Math.pow(1 - mv.t, 3);
+      const to = mv.to ?? this.center ?? new THREE.Vector3();
+      this.controls.target.lerpVectors(mv.from, to, e);
+      if (mv.t >= 1) this[key] = null;
+    }
+
     this.controls.update();
   }
 

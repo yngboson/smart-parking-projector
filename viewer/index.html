@@ -126,6 +126,11 @@
     box-shadow: 0 0 10px currentColor;
   }
   #legend .slot { color: var(--muted); font-size: 11px; }
+  /* 누를 수 있는 줄은 눌러 보고 싶게 생겨야 한다 — 발표자가 찾지 못하면 없는 기능이다 */
+  #legend .item.clickable { cursor: pointer; border-radius: 5px; padding: 2px 5px; margin: -2px -5px; }
+  #legend .item.clickable:hover { background: rgba(255,255,255,0.09); }
+  #legend .item.tracking { background: rgba(120,190,255,0.18); }
+  #legend .item.tracking::after { content: "추적 중"; color: #9fd2ff; font-size: 10px; }
 
   /* ── 우하단: 안내 문구 ── */
   #hint {
@@ -256,6 +261,22 @@
 
     <div class="field">
       <button id="btn-pause" class="wide">일시정지</button>
+    </div>
+
+    <div class="field" id="timeline" style="display:none">
+      <label>타임라인 <span id="v-seek" style="color:var(--text)"></span></label>
+      <input type="range" id="r-seek" min="0" max="1000" step="1" value="0" />
+      <div class="seg" style="margin-top:6px">
+        <button id="btn-back" title="한 프레임 뒤로">◀ 한 칸</button>
+        <button id="btn-fwd" title="한 프레임 앞으로">한 칸 ▶</button>
+      </div>
+      <p class="note">녹화본에서만 쓸 수 있습니다. 강탈이 일어난 순간으로 되돌아가
+        이벤트 목록의 줄을 누르면 그 자리를 비춥니다.</p>
+    </div>
+
+    <div class="field">
+      <label>녹화본</label>
+      <select id="sel-trace"></select>
     </div>
 
     <div class="field">

@@ -33,9 +33,8 @@ def lot() -> LotMap:
 
 
 def run(lot: LotMap, seed: int = 1, **kw) -> tuple[Simulation, MetricsCollector]:
-    config = SimConfig(
-        seed=seed, arrival_rate=0.3, prefill=0.4, noncompliant_share=0.35, **kw
-    )
+    settings = {"arrival_rate": 0.3, "prefill": 0.4, "noncompliant_share": 0.35, **kw}
+    config = SimConfig(seed=seed, **settings)
     sim = Simulation(lot, config=config)
     collector = MetricsCollector(lot)
     for frame in sim.run(SHORT, stride=10):
@@ -75,7 +74,9 @@ def test_prefilled_cars_are_kept_out_of_the_statistics(lot: LotMap) -> None:
 
     prefilled = [r for r in rows if r["prefilled"]]
     assert prefilled, "초기점유 60% 인데 처음부터 있던 차가 하나도 없습니다"
-    assert all(r["driven_m"] == 0.0 for r in prefilled)
+    # 들어오는 장면이 없었다 = 주차 소요시간이 0 에 붙어 있다.
+    # (나중에 출차하며 굴러가므로 주행거리는 0 이 아닐 수 있다.)
+    assert all((r["park_time_s"] or 0.0) < 1.0 for r in prefilled)
 
     summary = collector.summary()
     assert summary["seen"] == len(rows) - len(prefilled)

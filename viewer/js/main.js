@@ -16,9 +16,10 @@
 import { Stage, THREE } from "/js/scene.js";
 import { buildFloor } from "/js/lot_floor.js";
 import { GuidanceLine, TargetMarker } from "/js/guidance.js";
+import { EventFlash } from "/js/highlight.js";
 import { Palette } from "/js/palette.js";
 import { VehicleModels, buildContactShadow, pickBodyColor } from "/js/vehicles.js";
-import { connectBestSource } from "/js/source.js";
+import { TraceSource, connectBestSource, listTraces } from "/js/source.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -68,7 +69,7 @@ export async function boot() {
     `${Math.round(lot.bounds[3] - lot.bounds[1])} m`;
 
   world.source = await connectBestSource(
-    (frame) => world.applyFrame(frame),
+    (frame, opts) => world.applyFrame(frame, opts),
     (s) => showStatus(s)
   );
 
@@ -109,6 +110,9 @@ class App {
     this.glow = 1.0;
     this.t = 0;
 
+    this.flashes = [];
+    this.following = null;        // 카메라가 따라가는 번호판
+
     this.graphGroup = buildGraphOverlay(THREE, lot);
     this.graphGroup.visible = false;
     stage.scene.add(this.graphGroup);
@@ -116,16 +120,41 @@ class App {
 
   // ── 프레임 수신 ───────────────────────────────────────────────
 
-  applyFrame(frame) {
+  applyFrame(frame, { seek = false } = {}) {
+    if (seek) this.clear();
+    // 건너뛴 직후에는 입구 말풍선을 띄우지 않는다. 되살아난 유도선이 열 개면
+    // 말풍선도 열 개가 한꺼번에 뜬다 — 이미 지나간 순간의 안내다.
+    this._silent = seek;
     this.t = frame.t;
     this.syncVehicles(frame.vehicles ?? []);
     this.syncGuidance(frame.guidance ?? []);
+    this._silent = false;
 
     for (const s of frame.slots ?? []) this.slotStatus.set(s.id, s.status);
     for (const e of frame.events ?? []) this.logEvent(e);
 
     this.kpi = frame.kpi ?? {};
     this.refreshStats();
+  }
+
+  /**
+   * 화면에 있는 것을 전부 지운다. 타임라인을 건너뛴 직후에만 부른다.
+   *
+   * 지우지 않으면 건너뛰기 전의 차량과 유도선이 그대로 남는다 — 프레임은
+   * "지금 있는 것"만 싣기 때문에, 되감기로 아직 안 들어온 차를 지울 방법이
+   * 그쪽에는 없다.
+   */
+  clear() {
+    for (const car of this.cars.values()) {
+      if (car.group) this.stage.scene.remove(car.group);
+    }
+    this.cars.clear();
+    for (const plate of [...this.lines.keys()]) this.disposeLine(plate);
+    for (const f of this.flashes) this.stage.scene.remove(f.group);
+    this.flashes.length = 0;
+    this.events.length = 0;
+    renderEvents(this.events);
+    this.stopFollowing();
   }
 
   /**
@@ -219,7 +248,7 @@ class App {
       revision: row.revision ?? 0, slotId: row.target, slot,
     };
     this.lines.set(row.id, g);
-    this.bubbles.show(g, this.t);
+    if (!this._silent) this.bubbles.show(g, this.t);
     return g;
   }
 
@@ -240,9 +269,48 @@ class App {
       e.type === "slot_stolen"
         ? `<b>자리 강탈</b> ${e.taker} 가 ${e.slot} 을 차지 — ${e.victim} 재배정`
         : `경로 이탈 ${e.plate} (${e.node})`;
-    this.events.unshift({ t: this.t, text, kind: e.type });
+    this.events.unshift({ t: this.t, text, kind: e.type, slot: e.slot, plate: e.victim ?? e.plate });
     this.events.length = Math.min(this.events.length, EVENT_LOG);
-    renderEvents(this.events);
+    renderEvents(this.events, this);
+
+    if (e.type === "slot_stolen") this.flashSlot(e.slot, e.victim);
+  }
+
+  /**
+   * 강탈이 일어난 자리를 화면에서 짚는다.
+   *
+   * 이벤트 로그에 한 줄 뜨는 것만으로는 청중이 차 서른 대 사이에서 그 자리를
+   * 찾지 못한다. 발표에서 가장 중요한 순간이 가장 안 보이는 순간이 된다.
+   */
+  flashSlot(slotId, victim) {
+    const slot = this.slotById.get(slotId);
+    if (!slot) return;
+    const color = this.lines.get(victim)?.style.color ?? 0xff6b5a;
+    const flash = new EventFlash(THREE, slot, color);
+    this.stage.scene.add(flash.group);
+    this.flashes.push(flash);
+  }
+
+  // ── 카메라 추적 ───────────────────────────────────────────────
+
+  followPlate(plate) {
+    if (this.following === plate) {
+      this.stopFollowing();
+      return;
+    }
+    this.following = plate;
+    this.stage.follow(() => {
+      const car = this.cars.get(plate);
+      return car?.shown ?? null;      // 차가 떠나면 null → Stage 가 스스로 놓는다
+    });
+    renderLegend([...this.lines.values()], this);
+  }
+
+  stopFollowing() {
+    if (!this.following) return;
+    this.following = null;
+    this.stage.unfollow();
+    renderLegend([...this.lines.values()], this);
   }
 
   // ── 매 화면 프레임 ────────────────────────────────────────────
@@ -265,6 +333,17 @@ class App {
       g.marker?.update(dt);
     }
 
+    for (const f of [...this.flashes]) {
+      f.update(dt);
+      if (!f.done) continue;
+      this.stage.scene.remove(f.group);
+      f.dispose();
+      this.flashes.splice(this.flashes.indexOf(f), 1);
+    }
+
+    // 따라가던 차가 사라지면 Stage 가 놓는다 — 표시도 같이 정리한다
+    if (this.following && !this.stage.following) this.stopFollowing();
+
     this.bubbles.update(this.t);
   }
 
@@ -280,7 +359,7 @@ class App {
       `${Math.round((this.kpi.occupancy ?? 0) * 100)}<small>%</small>`;
     $("s-guided").textContent = this.lines.size;
     $("s-reroute").textContent = this.kpi.reroutes ?? 0;
-    renderLegend([...this.lines.values()]);
+    renderLegend([...this.lines.values()], this);
   }
 }
 
@@ -363,7 +442,13 @@ class BubbleLayer {
 
 // ── 화면 조각 ─────────────────────────────────────────────────────
 
-function renderLegend(lines) {
+/**
+ * 안내 중인 차량 목록. **한 줄을 누르면 카메라가 그 차를 따라간다.**
+ *
+ * 발표에서 "이 차가 지금 무엇을 겪고 있는지 보시죠"로 넘어가는 통로다. 전체 화면만
+ * 보여 주면 차 서른 대가 동시에 움직여서 아무 이야기도 전달되지 않는다.
+ */
+function renderLegend(lines, world) {
   const box = $("legend-items");
   box.innerHTML = "";
   if (!lines.length) {
@@ -373,29 +458,42 @@ function renderLegend(lines) {
   for (const g of lines) {
     const css = Palette.css(g.style.color);
     const el = document.createElement("div");
-    el.className = "item";
+    el.className = "item clickable" + (world?.following === g.plate ? " tracking" : "");
+    el.title = "누르면 카메라가 이 차를 따라갑니다";
     el.innerHTML =
       `<span class="chip" style="background:${css}"></span>` +
       `<span>${g.plate}</span>` +
       `<span class="slot">${g.style.name}색 → ${g.slotId}</span>`;
+    el.addEventListener("click", () => world?.followPlate(g.plate));
     box.appendChild(el);
   }
 }
 
-function renderEvents(events) {
+/** 이벤트 로그. 강탈 줄을 누르면 카메라가 **그 자리**를 비춘다. */
+function renderEvents(events, world) {
   const box = $("event-items");
   if (!box) return;
+  box.innerHTML = "";
   if (!events.length) {
     box.innerHTML = `<div class="item"><span class="slot">아직 없음</span></div>`;
     return;
   }
-  box.innerHTML = events
-    .map(
-      (e) =>
-        `<div class="item ${e.kind}"><span class="slot">${e.t.toFixed(0)}s</span>` +
-        `<span>${e.text}</span></div>`
-    )
-    .join("");
+  for (const e of events) {
+    const el = document.createElement("div");
+    const jumpable = Boolean(world && e.slot && world.slotById.get(e.slot));
+    el.className = `item ${e.kind}` + (jumpable ? " clickable" : "");
+    if (jumpable) el.title = "누르면 그 자리를 비춥니다";
+    el.innerHTML =
+      `<span class="slot">${e.t.toFixed(0)}s</span><span>${e.text}</span>`;
+    if (jumpable) {
+      el.addEventListener("click", () => {
+        const slot = world.slotById.get(e.slot);
+        world.stage.lookAtPoint(slot.center[0], slot.center[1]);
+        world.flashSlot(e.slot, e.plate);
+      });
+    }
+    box.appendChild(el);
+  }
 }
 
 function showStatus({ connected, live, text }) {
@@ -514,6 +612,68 @@ function wireControls(stage, world) {
   }
 
   wireScenario(world);
+  wireTimeline(world);
+}
+
+/**
+ * 녹화본 타임라인 — 스크러버와 녹화본 선택.
+ *
+ * **발표에서 이것이 없으면 사고가 난다.** 강탈은 900초짜리 녹화본 중 어느 한
+ * 순간에 일어나고, 그 순간을 다시 보여 달라는 질문이 반드시 나온다. 처음부터
+ * 다시 트는 것 말고 방법이 없으면 그 자리에서 답을 못 한다.
+ *
+ * 라이브에서는 숨긴다 — 아직 오지 않은 시각으로 끌 수는 없다.
+ */
+function wireTimeline(world) {
+  const box = $("timeline");
+  const bar = $("r-seek");
+  const label = $("v-seek");
+  const picker = $("sel-trace");
+  if (!box || !bar) return;
+
+  const src = world.source;
+  if (!src?.seekable) {
+    // 라이브다 — 아직 오지 않은 시각으로 끌 수는 없다
+    box.style.display = "none";
+    picker?.closest(".field")?.style.setProperty("display", "none");
+    return;
+  }
+  box.style.display = "";
+
+  let dragging = false;
+  src.onProgress(({ index, count, t, total }) => {
+    if (!dragging) bar.value = String(count > 1 ? (index / (count - 1)) * 1000 : 0);
+    label.textContent = `${t.toFixed(0)} / ${total.toFixed(0)}초`;
+  });
+
+  // 끄는 동안에도 화면이 따라와야 어디를 짚었는지 알 수 있다
+  bar.addEventListener("input", () => {
+    dragging = true;
+    src.seekFraction(Number(bar.value) / 1000);
+  });
+  bar.addEventListener("change", () => { dragging = false; });
+
+  $("btn-back")?.addEventListener("click", () => src.step(-1));
+  $("btn-fwd")?.addEventListener("click", () => src.step(+1));
+
+  fillTracePicker(picker, src);
+}
+
+async function fillTracePicker(picker, src) {
+  if (!picker) return;
+  const traces = await listTraces();
+  if (traces.length < 2) {
+    picker.closest(".field")?.style.setProperty("display", "none");
+    return;
+  }
+  picker.innerHTML = traces
+    .map((t) => `<option value="${t.path}">${t.id ?? t.path}</option>`)
+    .join("");
+  picker.value = src.url;
+  picker.addEventListener("change", () => {
+    // 페이지를 다시 여는 편이 가장 확실하다 — 장면을 통째로 새로 짓는다
+    location.search = `?trace=${encodeURIComponent(picker.value)}`;
+  });
 }
 
 /**
