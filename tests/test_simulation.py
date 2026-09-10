@@ -230,3 +230,48 @@ def test_control_only_ever_sees_sensor_events(lot: LotMap) -> None:
         assert isinstance(e, SensorEvent), f"{type(e).__name__} 은 센서 이벤트가 아닙니다"
         for value in vars(e).values() if hasattr(e, "__dict__") else ():
             assert not hasattr(value, "spec"), "차량 객체가 이벤트에 실려 있습니다"
+
+
+# ── 두 개의 상한 (D-030) ──────────────────────────────────────────
+
+
+def test_the_palette_limit_never_throttles_the_unguided_mode(lot: LotMap) -> None:
+    """**유도선 색 팔레트의 한계가 무안내 모드를 막으면 안 된다.**
+
+    `max_guided` = 20 은 색 구분의 한계에서 나온 숫자다 (D-006). 무안내 모드에는
+    유도선이 없으니 걸릴 이유가 없는데도 똑같이 걸리고 있었다. 그러면 "무안내가
+    처리량이 낮다"가 물리적 혼잡 때문인지 팔레트 때문인지 구분되지 않는다
+    (docs/ALLOCATION_MODEL.md 7절).
+    """
+    from sim.control.api import NullControl
+
+    config = SimConfig(seed=0, arrival_rate=0.4, dwell_mean=600.0, max_guided=5)
+    blind = Simulation(lot, control=NullControl(), config=config)
+    for _frame in blind.run(240.0, stride=100):
+        pass
+
+    circulating = sum(1 for v in blind.vehicles if v.parked_t is None)
+    assert circulating > config.max_guided, (
+        f"무안내인데 주행 차량이 {circulating}대에서 멈췄습니다 "
+        f"— 팔레트 상한 {config.max_guided} 이 걸리고 있습니다"
+    )
+
+
+def test_the_road_capacity_comes_from_the_layout(lot: LotMap) -> None:
+    """포화는 상수가 아니라 **도로 용량**이어야 한다.
+
+    이게 상수면 포화 실험이 주차장의 용량이 아니라 그 상수를 재게 된다.
+    """
+    from sim.world.lot_builder import GridSpec, build_grid_lot
+
+    wide = build_grid_lot(GridSpec(aisle_width=20.0))
+    assert wide.road_capacity() > lot.road_capacity(), (
+        "통로를 넓혔는데 도로 용량이 그대로입니다 — 도면과 연동돼 있지 않습니다"
+    )
+
+    sim = Simulation(lot, config=SimConfig())
+    assert sim.max_circulating == lot.road_capacity()
+
+    # 명시하면 그것을 쓴다 — 실험이 용량을 스윕할 수 있어야 한다
+    pinned = Simulation(lot, config=SimConfig(max_circulating=7))
+    assert pinned.max_circulating == 7

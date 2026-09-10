@@ -701,6 +701,8 @@ async function wireScenario(world) {
   const defect = $("r-defect");
   const note = $("scenario-note");
 
+  wireModes(world, live);
+
   for (const el of [select, arrival, defect]) if (el) el.disabled = !live;
 
   const showArrival = () =>
@@ -754,6 +756,56 @@ async function wireScenario(world) {
     sync(select.value);
   });
   sync(current);
+}
+
+/**
+ * 자리 배정 방식 선택기.
+ *
+ * **발표에서 이 선택기가 하는 일이 곧 논지입니다.** 같은 주차장·같은 도착률 위에서
+ * 배정 방식만 갈아 끼우면, 화면에 나타나는 차이는 전부 배정 때문입니다 — 안내가
+ * 없을 때 통로를 도는 모습, 좋은 자리로 몰려 한쪽 통로만 막히는 모습, 고르게 흩어져
+ * 통로는 한산한데 사람들이 멀리 걷는 모습.
+ *
+ * 바꾸면 시뮬레이션이 처음부터 다시 돕니다. 도중에 갈아 끼우면 앞부분이 다른 방식으로
+ * 배정된 상태가 섞여, 무엇 때문에 달라졌는지 말할 수 없게 되기 때문입니다.
+ *
+ * 녹화본에서는 잠급니다 — 이미 벌어진 일입니다.
+ */
+async function wireModes(world, live) {
+  const select = $("sel-mode");
+  const note = $("mode-note");
+  if (!select) return;
+
+  select.disabled = !live;
+  if (!live) {
+    if (note) note.textContent = "녹화본입니다. 배정 방식은 바꿀 수 없습니다.";
+    return;
+  }
+
+  let modes;
+  try {
+    modes = (await fetch("/api/modes").then((r) => r.json())).modes ?? [];
+  } catch {
+    return;
+  }
+  if (!modes.length) return;
+
+  select.innerHTML = modes
+    .map((m) => `<option value="${m.name}">${m.label}</option>`)
+    .join("");
+
+  const byName = new Map(modes.map((m) => [m.name, m]));
+  const show = (name) => {
+    if (note) note.textContent = byName.get(name)?.note ?? "";
+  };
+
+  select.value = world.source?.hello?.mode ?? modes[0].name;
+  show(select.value);
+
+  select.addEventListener("change", () => {
+    world.source?.send?.({ cmd: "mode", name: select.value });
+    show(select.value);
+  });
 }
 
 function hash(str) {

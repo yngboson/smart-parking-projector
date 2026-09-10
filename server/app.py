@@ -97,6 +97,49 @@ def list_traces() -> JSONResponse:
     return JSONResponse({"traces": traces})
 
 
+ALLOCATION_MODES = [
+    {
+        "name": "none",
+        "label": "안내 없음 — 차가 알아서",
+        "note": "유도선이 없습니다. 운전자가 통로를 돌며 눈으로 빈 자리를 찾습니다. "
+                "다른 두 모드가 무엇을 개선하는지 재는 기준선입니다 (D-010).",
+    },
+    {
+        "name": "walk_only",
+        "label": "좋은 자리 선착순",
+        "note": "건물에서 가장 가까운 빈 자리를 먼저 온 사람에게 줍니다. "
+                "도보는 짧아지지만 좋은 구역 통로에 차가 몰립니다 — 집중의 극단입니다.",
+    },
+    {
+        "name": "spread_only",
+        "label": "전체 분산",
+        "note": "이미 차가 몰린 구역을 피해 주차장 전체에 고르게 흩뜨립니다. "
+                "통로는 한산해지지만 도보가 길어집니다 — 분산의 극단입니다.",
+    },
+    {
+        "name": "greedy_nearest",
+        "label": "균형 (기본값)",
+        "note": "주행거리·회전·통로혼잡·도보거리를 함께 봅니다. 위 두 극단 사이 어딘가에 "
+                "있으며, 그 좌표를 보려고 극단 둘을 만들었습니다.",
+    },
+]
+"""고를 수 있는 자리 배정 방식.
+
+앞의 셋이 **집중–분산 축의 양 끝과 그 바깥**입니다 (docs/ALLOCATION_MODEL.md 4.1·5절).
+`walk_only` 와 `spread_only` 는 좋은 전략이라서가 아니라 **다른 전략들이 어디쯤 있는지
+좌표를 주려고** 있습니다. 넷을 한 화면에서 갈아 끼우며 보는 것이 이 선택기의 목적입니다.
+
+비교 실험용 전략(`congestion_aware` 등)은 여기 넣지 않습니다 — 발표 화면에서 고를 것과
+매트릭스에서 돌릴 것은 다릅니다.
+"""
+
+
+@app.get("/api/modes")
+def list_modes() -> JSONResponse:
+    """자리 배정 방식 목록. 뷰어의 선택기가 이걸로 그려진다."""
+    return JSONResponse({"modes": ALLOCATION_MODES})
+
+
 @app.get("/api/scenarios")
 def list_scenarios() -> JSONResponse:
     """실험 시나리오 목록. 발표 중에 조건을 갈아 끼울 때 쓴다."""
@@ -212,14 +255,22 @@ class LiveSession:
         self.layout = layout
         self.scenario = scenario
         self.config = _scenario_config(scenario)
+        self.mode: str | None = None
+        """발표자가 고른 자리 배정 방식. None 이면 시나리오가 지정한 것을 쓴다."""
         self.sim = self._build()
         self.speed = 1.0
         self.paused = False
 
     def _build(self) -> Simulation:
-        """시나리오가 지정한 할당·복구 전략으로 시뮬레이션을 만든다."""
+        """시나리오가 지정한 할당·복구 전략으로 시뮬레이션을 만든다.
+
+        발표자가 배정 방식을 골랐으면 그것이 시나리오를 덮어쓴다 — 같은 조건 위에서
+        방식만 갈아 끼워야 차이가 방식 때문이라고 말할 수 있다.
+        """
         try:
-            control = load_named(self.scenario).build_control(self.lot)
+            control = load_named(self.scenario).build_control(
+                self.lot, allocator=self.mode
+            )
         except FileNotFoundError:
             control = None
         return Simulation(self.lot, control=control, config=self.config)
@@ -251,6 +302,13 @@ class LiveSession:
             self.scenario = name
             self.config = _scenario_config(name)
             self.sim = self._build()
+        elif cmd == "mode":
+            # 배정 방식을 바꾸면 처음부터 다시 돈다. 도중에 갈아 끼우면 앞부분이
+            # 다른 방식으로 배정된 상태가 섞여, 무엇 때문에 달라졌는지 알 수 없다.
+            wanted = str(msg.get("name", ""))
+            known = {m["name"] for m in ALLOCATION_MODES}
+            self.mode = wanted if wanted in known else None
+            self.sim = self._build()
 
     @property
     def hello(self) -> dict:
@@ -259,6 +317,7 @@ class LiveSession:
             "live": True,
             "layout": self.layout,
             "scenario": self.scenario,
+            "mode": self.mode or _scenario_allocator(self.scenario),
             "dt": self.config.dt,
             "config": asdict(self.config),
         }
@@ -314,6 +373,14 @@ def _scenario_config(name: str) -> SimConfig:
         return load_named(name).config
     except FileNotFoundError:
         return SimConfig()
+
+
+def _scenario_allocator(name: str) -> str:
+    """시나리오가 기본으로 쓰는 배정 방식. 선택기의 처음 값이 된다."""
+    try:
+        return load_named(name).allocator
+    except FileNotFoundError:
+        return "greedy_nearest"
 
 
 def _maybe_int(v) -> int | None:

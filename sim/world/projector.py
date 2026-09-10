@@ -118,6 +118,10 @@ class Projector:
         beam = self._beams.get(plate)
         return None if beam is None else beam.view()
 
+    def count(self) -> int:
+        """지금 떠 있는 유도선 수. 색 팔레트 상한(D-006)을 지키는 데 쓴다."""
+        return len(self._beams)
+
     def beams(self) -> list[Beam]:
         return list(self._beams.values())
 

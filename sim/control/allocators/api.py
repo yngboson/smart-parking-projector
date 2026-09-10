@@ -179,5 +179,7 @@ def _load_builtin() -> None:
         congestion_aware,
         greedy_nearest,
         hungarian_batch,
+        spread_only,
+        walk_only,
         zone_late_binding,
     )

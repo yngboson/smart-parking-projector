@@ -80,10 +80,23 @@ class SimConfig:
 
     dwell_min: float = 30.0
     max_guided: int = 20
-    """동시에 **안내 중인** 최대 대수. 주차를 마친 차는 세지 않는다.
+    """동시에 **바닥에 유도선을 띄울 수 있는** 최대 대수.
 
-    유도선 색 구분의 한계다 (D-006). 주차장 자체의 수용력은 주차면 수가 정하므로
-    여기서 제한하면 안 된다 — 주차한 차까지 세면 주차장이 인위적으로 막힌다.
+    유도선 색 구분의 한계다 (D-006) — 색이 스무 개를 넘으면 운전자가 자기 선을
+    못 고른다. **투사 장비의 제약이므로 안내 모드에만 걸린다.** 무안내 모드에는
+    유도선이 없으니 걸릴 이유가 없다 (D-030).
+    """
+
+    max_circulating: int = 0
+    """주차장 안을 동시에 **굴러다닐 수 있는** 최대 대수. 0 이면 도면에서 계산한다.
+
+    이쪽은 도로의 물리적 용량이므로 **두 모드에 똑같이** 걸린다
+    (`LotMap.road_capacity`, 지금 도면에서 119대).
+
+    **둘을 나누기 전에는 `max_guided` 하나가 양쪽을 다 막고 있었다.** 그러면
+    "무안내가 처리량이 낮다"는 결과가 물리적 혼잡 때문인지 색 팔레트 한계 때문인지
+    구분되지 않는다 — 포화점을 재면 주차장 용량이 아니라 상수 20 을 재게 된다
+    (docs/ALLOCATION_MODEL.md 7절).
     """
 
     returning_share: float = 0.35
@@ -232,6 +245,12 @@ class Simulation:
         )
         self.sensors = SensorSuite(lot, self.config.slot_sensor_mode)
         self.projector = Projector()
+
+        self.max_circulating = self.config.max_circulating or lot.road_capacity()
+        """이 주차장이 동시에 담을 수 있는 주행 차량 수. 도면에서 나온다 (D-030)."""
+
+        self._guides = getattr(self.control, "name", "") != "none"
+        """관제가 유도선을 그리는가. 무안내 모드에는 팔레트 상한이 걸리지 않는다."""
         self.traffic = AisleTraffic(lot)
         self.vision = VisionModel.for_lot(lot)
         self._skill = DrivingSkill.for_lot(lot)
@@ -412,11 +431,25 @@ class Simulation:
     # ── 차량 생성/퇴장 ────────────────────────────────────────────
 
     def _spawn(self) -> None:
+        """도착을 받아 입구로 들여보낸다.
+
+        **두 개의 상한이 서로 다른 이유로 걸린다** (D-030):
+
+        - `max_circulating` — 도로의 물리적 용량. 두 모드 모두에 걸린다
+        - `max_guided` — 유도선 색 구분의 한계. **안내 모드에만** 걸린다
+
+        섞으면 포화 실험이 주차장 용량이 아니라 팔레트 크기를 재게 된다.
+        """
         cfg = self.config
         if self.rng.random() < cfg.arrival_rate * cfg.dt:
             self._backlog += 1
-        guided = sum(1 for v in self.vehicles if v.parked_t is None)
-        if self._backlog == 0 or guided >= cfg.max_guided:
+        if self._backlog == 0:
+            return
+
+        circulating = sum(1 for v in self.vehicles if v.parked_t is None)
+        if circulating >= self.max_circulating:
+            return
+        if self.projector.count() >= cfg.max_guided and self._guides:
             return
         if not self._entry_is_clear():
             return

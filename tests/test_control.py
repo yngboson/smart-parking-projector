@@ -443,3 +443,81 @@ def test_nobody_waits_forever_at_the_entrance(lot: LotMap) -> None:
             del waiting_since[plate]
 
     assert worst < 90.0, f"어떤 차가 입구에서 {worst:.0f}초를 기다렸습니다"
+
+
+# ── 자리 배정 방식 (D-030 · D-031) ────────────────────────────────
+
+
+def test_walk_only_puts_people_closer_to_the_building(lot: LotMap) -> None:
+    """`walk_only` 는 도보 거리 하나만 본다. 그것이 이 극단의 정의다."""
+    from sim.control.allocators import api as alloc_api
+
+    router = LaneRouter(lot)
+    entry = lot.entry_nodes[0]
+    ctx = alloc_api.AllocationContext(
+        lot=lot, router=router, available=list(lot.slots), load={}
+    )
+    req = alloc_api.AllocationRequest(
+        plate=PlateId("11가1111"), vehicle_class=VehicleClass.SEDAN, from_node=entry
+    )
+
+    got = alloc_api.get("walk_only").allocate([req], ctx)
+    assert got, "빈 주차장인데 아무것도 배정하지 않았습니다"
+
+    eligible = [s for s in ctx.candidates(req)]
+    best = min(eligible, key=lot.walk_distance)
+    assert lot.walk_distance(got[0].slot_id) <= lot.walk_distance(best) + 1e-6
+
+
+def test_spread_only_fills_every_zone_before_doubling_up(lot: LotMap) -> None:
+    """`spread_only` 는 이미 몰린 구역을 피한다.
+
+    한 배치에 구역 수만큼 요청이 들어오면 **서로 다른 구역**으로 흩어져야 한다.
+    """
+    from sim.control.allocators import api as alloc_api
+
+    router = LaneRouter(lot)
+    entry = lot.entry_nodes[0]
+    ctx = alloc_api.AllocationContext(
+        lot=lot, router=router, available=list(lot.slots), load={}
+    )
+    requests = [
+        alloc_api.AllocationRequest(
+            plate=PlateId(f"{i:02d}가1111"),
+            vehicle_class=VehicleClass.SEDAN,
+            from_node=entry,
+            t=float(i),
+        )
+        for i in range(len(lot.rows))
+    ]
+
+    got = alloc_api.get("spread_only").allocate(requests, ctx)
+    zones = [lot.slots[a.slot_id].row for a in got]
+    assert len(set(zones)) == len(zones), f"같은 구역으로 몰렸습니다: {zones}"
+
+
+def test_the_two_extremes_disagree_about_where_to_park(lot: LotMap) -> None:
+    """**둘이 같은 답을 내면 좌표축이 아니라 점 하나다.**
+
+    극단 대조군의 존재 이유가 "나머지 전략이 어디쯤인지 보여주는 것"이므로,
+    둘이 실제로 반대쪽을 가리켜야 한다 (docs/ALLOCATION_MODEL.md 5절).
+    """
+    from sim.control.allocators import api as alloc_api
+
+    router = LaneRouter(lot)
+    entry = lot.entry_nodes[0]
+    req = alloc_api.AllocationRequest(
+        plate=PlateId("11가1111"), vehicle_class=VehicleClass.SEDAN, from_node=entry
+    )
+
+    picks = {}
+    for name in ("walk_only", "spread_only"):
+        ctx = alloc_api.AllocationContext(
+            lot=lot, router=router, available=list(lot.slots), load={}
+        )
+        got = alloc_api.get(name).allocate([req], ctx)
+        picks[name] = lot.walk_distance(got[0].slot_id)
+
+    assert picks["walk_only"] < picks["spread_only"], (
+        f"도보 거리가 {picks} — 두 극단이 같은 방향을 가리킵니다"
+    )

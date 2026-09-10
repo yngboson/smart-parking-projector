@@ -214,6 +214,28 @@ class LotMap:
         """주차면에서 가장 가까운 건물 출입구까지의 직선 도보 거리."""
         return getattr(self, "_walk")[slot]
 
+    def road_capacity(self, vehicle_length: float = 4.7, headway: float = 2.0) -> int:
+        """통로가 물리적으로 담을 수 있는 **주행 차량** 수.
+
+        통로 총 길이를 (차량 길이 + 안전 차간)으로 나눈다. 양방향 통로는 두 줄이
+        오가므로 두 배로 센다.
+
+        **왜 도면에서 계산하는가.** "주차장이 포화됐다"가 상수를 재는 말이 되면 안
+        되기 때문이다. 지금까지 입구를 막던 값은 `max_guided` = 20 이었고, 그것은
+        **유도선 색 구분의 한계**에서 나온 숫자다 (D-006). 무안내 모드에는 유도선이
+        없으므로 그 제약이 걸릴 이유가 없는데도 똑같이 걸리고 있었다 — 그러면
+        "무안내가 처리량이 낮다"가 물리적 혼잡 때문인지 색 팔레트 때문인지
+        구분되지 않는다 (docs/ALLOCATION_MODEL.md 7절, D-030).
+
+        통로 폭을 바꾸면 이 값도 따라 움직인다 (D-019 의 손잡이 하나 원칙).
+        """
+        spacing = vehicle_length + headway
+        total = 0.0
+        for a in self.aisles:
+            lanes = 1 if a.one_way else 2
+            total += a.start.distance_to(a.end) * lanes
+        return max(1, int(total / spacing))
+
     # ── 편의 ──────────────────────────────────────────────────────
 
     def slots_in_row(self, row: str) -> list[Slot]:
